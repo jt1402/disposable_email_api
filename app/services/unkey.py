@@ -100,11 +100,14 @@ async def create_key(
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
-                f"{UNKEY_BASE}/v1/keys.createKey",
+                f"{UNKEY_BASE}/v2/keys.createKey",
                 headers={"Authorization": f"Bearer {settings.unkey_root_key}"},
                 json=payload,
             )
-            data = resp.json()
+        if resp.status_code != 200:
+            logger.error("Unkey createKey returned %s: %s", resp.status_code, resp.text)
+            return CreateKeyResult(error=f"unkey_http_{resp.status_code}")
+        data = resp.json().get("data", resp.json())
     except httpx.RequestError as exc:
         logger.error("Unkey create key request failed: %s", exc)
         return CreateKeyResult(error="auth_service_unavailable")
@@ -123,7 +126,7 @@ async def revoke_key(key_id: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
-                f"{UNKEY_BASE}/v1/keys.deleteKey",
+                f"{UNKEY_BASE}/v2/keys.deleteKey",
                 headers={"Authorization": f"Bearer {settings.unkey_root_key}"},
                 json={"keyId": key_id},
             )
