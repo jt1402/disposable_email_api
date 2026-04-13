@@ -60,6 +60,9 @@ class DomainReport(Base):
 
 async def init_db(database_url: str) -> None:
     global _engine, _session_factory
+    # Railway provides postgresql:// but asyncpg requires postgresql+asyncpg://
+    if database_url.startswith("postgresql://") or database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1).replace("postgres://", "postgresql+asyncpg://", 1)
     _engine = create_async_engine(database_url, echo=False, pool_pre_ping=True)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
