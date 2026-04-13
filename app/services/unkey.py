@@ -46,8 +46,12 @@ async def verify_key(api_key: str) -> VerifyResult:
             resp = await client.post(
                 f"{UNKEY_BASE}/keys.verifyKey",
                 json={"apiId": settings.unkey_api_id, "key": api_key},
+                headers={"Authorization": f"Bearer {settings.unkey_root_key}"},
             )
-            data = resp.json()
+        if resp.status_code != 200:
+            logger.error("Unkey returned %s: %s", resp.status_code, resp.text)
+            return VerifyResult(valid=False, error="auth_service_unavailable")
+        data = resp.json()
     except httpx.RequestError as exc:
         logger.error("Unkey request failed: %s", exc)
         return VerifyResult(valid=False, error="auth_service_unavailable")
