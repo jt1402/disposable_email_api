@@ -14,7 +14,7 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-UNKEY_BASE = "https://api.unkey.com/v1"
+UNKEY_BASE = "https://api.unkey.com"
 
 
 @dataclass
@@ -44,9 +44,8 @@ async def verify_key(api_key: str) -> VerifyResult:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
-                f"{UNKEY_BASE}/keys.verifyKey",
+                f"{UNKEY_BASE}/v1/keys.verifyKey",
                 json={"apiId": settings.unkey_api_id, "key": api_key},
-                headers={"Authorization": f"Bearer {settings.unkey_root_key}"},
             )
         if resp.status_code != 200:
             logger.error("Unkey returned %s: %s", resp.status_code, resp.text)
@@ -100,7 +99,7 @@ async def create_key(
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
-                f"{UNKEY_BASE}/keys.createKey",
+                f"{UNKEY_BASE}/v1/keys.createKey",
                 headers={"Authorization": f"Bearer {settings.unkey_root_key}"},
                 json=payload,
             )
@@ -123,7 +122,7 @@ async def revoke_key(key_id: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
-                f"{UNKEY_BASE}/keys.deleteKey",
+                f"{UNKEY_BASE}/v1/keys.deleteKey",
                 headers={"Authorization": f"Bearer {settings.unkey_root_key}"},
                 json={"keyId": key_id},
             )
