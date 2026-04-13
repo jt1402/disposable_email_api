@@ -95,6 +95,7 @@ async def create_key(
             "refill": {
                 "interval": "monthly",
                 "amount": monthly_limit,
+                "refillDay": 1,
             },
         }
 
