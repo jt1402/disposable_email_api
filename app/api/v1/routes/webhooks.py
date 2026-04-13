@@ -5,6 +5,7 @@ Stripe sends signed webhook events here.
 Signature verified before any processing to prevent spoofing.
 """
 
+import json
 import logging
 
 import stripe
@@ -29,12 +30,13 @@ async def stripe_webhook(
     if not stripe_signature or not settings.stripe_webhook_secret:
         raise HTTPException(status_code=400, detail="Missing signature")
 
+    payload_dict = json.loads(payload)
     try:
         event = stripe.Webhook.construct_event(
             payload, stripe_signature, settings.stripe_webhook_secret
         )
         event_type = event["type"]
-        event_data = event["data"]["object"]
+        event_data = payload_dict["data"]["object"]
     except stripe.SignatureVerificationError as e:
         logger.warning("Signature verification failed: %s", str(e))
         # Try v2 thin event format (Stripe Workbench)
@@ -44,7 +46,7 @@ async def stripe_webhook(
             )
             event_type = thin_event.type
             full_event = stripe.Event.retrieve(thin_event.id)
-            event_data = full_event["data"]["object"]
+            event_data = full_event.to_dict_recursive()["data"]["object"]
         except Exception as e2:
             logger.warning("Thin event verification also failed: %s", str(e2))
             raise HTTPException(status_code=400, detail="Invalid signature")
