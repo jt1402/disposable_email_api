@@ -14,7 +14,7 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-UNKEY_BASE = "https://api.unkey.dev/v1"
+UNKEY_BASE = "https://api.unkey.com/v1"
 
 
 @dataclass
@@ -42,7 +42,7 @@ async def verify_key(api_key: str) -> VerifyResult:
         return VerifyResult(valid=True, key_id="dev", owner_id="dev", tier="pro")
 
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
                 f"{UNKEY_BASE}/keys.verifyKey",
                 json={"apiId": settings.unkey_api_id, "key": api_key},
