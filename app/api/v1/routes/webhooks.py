@@ -33,16 +33,27 @@ async def stripe_webhook(
         event = stripe.Webhook.construct_event(
             payload, stripe_signature, settings.stripe_webhook_secret
         )
+        event_type = event["type"]
+        event_data = event["data"]["object"]
     except stripe.SignatureVerificationError:
-        logger.warning("Invalid Stripe webhook signature")
-        raise HTTPException(status_code=400, detail="Invalid signature")
+        # Try v2 thin event format (Stripe Workbench)
+        try:
+            thin_event = stripe.Webhook.construct_thin_event(
+                payload, stripe_signature, settings.stripe_webhook_secret
+            )
+            event_type = thin_event.type
+            # Fetch full event data for thin events
+            full_event = stripe.Event.retrieve(thin_event.id)
+            event_data = full_event["data"]["object"]
+        except Exception:
+            logger.warning("Invalid Stripe webhook signature")
+            raise HTTPException(status_code=400, detail="Invalid signature")
 
-    event_type = event["type"]
     logger.info("Stripe webhook: %s", event_type)
 
     if event_type == "checkout.session.completed":
-        await handle_checkout_completed(event["data"]["object"])
+        await handle_checkout_completed(event_data)
     elif event_type in ("customer.subscription.deleted", "customer.subscription.paused"):
-        await handle_subscription_deleted(event["data"]["object"])
+        await handle_subscription_deleted(event_data)
 
     return {"received": True}
