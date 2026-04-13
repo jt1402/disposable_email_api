@@ -35,18 +35,18 @@ async def stripe_webhook(
         )
         event_type = event["type"]
         event_data = event["data"]["object"]
-    except stripe.SignatureVerificationError:
+    except stripe.SignatureVerificationError as e:
+        logger.warning("Signature verification failed: %s", str(e))
         # Try v2 thin event format (Stripe Workbench)
         try:
             thin_event = stripe.Webhook.construct_thin_event(
                 payload, stripe_signature, settings.stripe_webhook_secret
             )
             event_type = thin_event.type
-            # Fetch full event data for thin events
             full_event = stripe.Event.retrieve(thin_event.id)
             event_data = full_event["data"]["object"]
-        except Exception:
-            logger.warning("Invalid Stripe webhook signature")
+        except Exception as e2:
+            logger.warning("Thin event verification also failed: %s", str(e2))
             raise HTTPException(status_code=400, detail="Invalid signature")
 
     logger.info("Stripe webhook: %s", event_type)
