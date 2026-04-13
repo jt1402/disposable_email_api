@@ -65,9 +65,9 @@ async def verify_key(api_key: str) -> VerifyResult:
     return VerifyResult(
         valid=True,
         key_id=data.get("keyId", ""),
-        owner_id=data.get("ownerId", ""),
+        owner_id=data.get("externalId", data.get("ownerId", "")),
         tier=tier,
-        remaining=data.get("remaining"),
+        remaining=(data.get("credits") or {}).get("remaining", data.get("remaining")),
     )
 
 
@@ -83,19 +83,20 @@ async def create_key(
 
     payload: dict = {
         "apiId": settings.unkey_api_id,
-        "ownerId": owner_id,
+        "externalId": owner_id,
         "meta": {"tier": tier},
         "name": name or f"{tier} key for {owner_id}",
         "prefix": "dc",  # "dc_" prefix — recognisable brand prefix
     }
 
     if monthly_limit > 0:
-        # Unkey refill: reset to monthly_limit on the 1st of each month
-        payload["refill"] = {
-            "interval": "monthly",
-            "amount": monthly_limit,
+        payload["credits"] = {
+            "remaining": monthly_limit,
+            "refill": {
+                "interval": "monthly",
+                "amount": monthly_limit,
+            },
         }
-        payload["remaining"] = monthly_limit
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
