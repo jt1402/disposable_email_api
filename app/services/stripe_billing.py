@@ -33,7 +33,10 @@ async def handle_checkout_completed(session: dict) -> None:
     Creates customer record + Unkey API key.
     """
     settings = get_settings()
-    customer_email = session.get("customer_details", {}).get("email", "")
+    # Convert StripeObject to plain dict if needed
+    if hasattr(session, "to_dict_recursive"):
+        session = session.to_dict_recursive()
+    customer_email = (session.get("customer_details") or {}).get("email", "")
     stripe_customer_id = session.get("customer", "")
     price_id = ""
 
@@ -88,6 +91,8 @@ async def handle_checkout_completed(session: dict) -> None:
 
 async def handle_subscription_deleted(subscription: dict) -> None:
     """Revoke the API key when a subscription is cancelled."""
+    if hasattr(subscription, "to_dict_recursive"):
+        subscription = subscription.to_dict_recursive()
     stripe_customer_id = subscription.get("customer", "")
 
     async with db.get_session() as session_db:
