@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _to_dict(obj):
+    """Recursively convert StripeObject to plain dict."""
+    if isinstance(obj, list):
+        return [_to_dict(i) for i in obj]
+    if hasattr(obj, "keys"):
+        return {k: _to_dict(obj[k]) for k in obj.keys()}
+    return obj
+
+
 @router.post("/webhooks/stripe", include_in_schema=False)
 async def stripe_webhook(
     request: Request,
@@ -46,7 +55,7 @@ async def stripe_webhook(
             )
             event_type = thin_event.type
             full_event = stripe.Event.retrieve(thin_event.id)
-            event_data = full_event.to_dict_recursive()["data"]["object"]
+            event_data = _to_dict(full_event["data"]["object"])
         except Exception as e2:
             logger.warning("Thin event verification also failed: %s", str(e2))
             raise HTTPException(status_code=400, detail="Invalid signature")
