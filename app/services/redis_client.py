@@ -29,6 +29,9 @@ class RedisClient:
     async def setex(self, key: str, ttl: int, value: str) -> None:
         await self._client.setex(key, ttl, value)
 
+    async def delete(self, key: str) -> None:
+        await self._client.delete(key)
+
     async def incr(self, key: str) -> int:
         return await self._client.incr(key)
 

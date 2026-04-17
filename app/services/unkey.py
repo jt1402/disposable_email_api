@@ -24,6 +24,7 @@ class VerifyResult:
     owner_id: str = ""
     tier: str = "free"
     remaining: int | None = None
+    risk_profile: str = ""  # from meta.risk_profile — empty → use server default
     error: str = ""
 
 
@@ -60,7 +61,9 @@ async def verify_key(api_key: str) -> VerifyResult:
         return VerifyResult(valid=False, error=data.get("code", "invalid_key"))
 
     # meta.tier is stored when the key is created (set per Stripe plan)
-    tier = (data.get("meta") or {}).get("tier", "free")
+    meta = data.get("meta") or {}
+    tier = meta.get("tier", "free")
+    risk_profile = meta.get("risk_profile", "")
 
     return VerifyResult(
         valid=True,
@@ -68,6 +71,7 @@ async def verify_key(api_key: str) -> VerifyResult:
         owner_id=data.get("externalId", data.get("ownerId", "")),
         tier=tier,
         remaining=(data.get("credits") or {}).get("remaining", data.get("remaining")),
+        risk_profile=risk_profile,
     )
 
 

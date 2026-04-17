@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.v1.deps import require_api_key
 from app.models.check import ReportRequest, ReportResponse
-from app.services import db
+from app.services import db, recorder
 from app.services.redis_client import get_redis
 from app.services.unkey import VerifyResult
 
@@ -47,6 +47,9 @@ async def report(
     except Exception as exc:
         logger.error("Failed to persist domain report: %s", exc)
 
+    # ── Bump domain_stats report counters (feeds auto-blocklist promotion) ──
+    await recorder.bump_report_counter(domain, body.outcome)
+
     # ── Update behavioral signals in Redis ───────────────────────────────────
     if body.outcome == "confirmed_throwaway":
         # Amplify the behavioral count signal — treat each report as N queries
@@ -55,13 +58,13 @@ async def report(
             await redis.incr(count_key)
 
         # Bust the result cache so next check runs fresh
-        await redis.set(f"result:{domain}", "")  # invalidate
+        await redis.delete(f"result:v2:{domain}")  # invalidate
 
         logger.info("Domain %s confirmed throwaway by key %s", domain, auth.key_id)
 
     elif body.outcome == "confirmed_legitimate":
         # Clear any cached result so the domain gets a fresh check
-        await redis.set(f"result:{domain}", "")
+        await redis.delete(f"result:v2:{domain}")
 
         logger.info("Domain %s confirmed legitimate by key %s", domain, auth.key_id)
 

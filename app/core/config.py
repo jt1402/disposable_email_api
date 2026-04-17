@@ -29,13 +29,23 @@ class Settings(BaseSettings):
     stripe_price_pro: str = ""
 
     # Detection timeouts (seconds)
-    dns_timeout: float = 3.0
+    dns_timeout: float = 2.0
     whois_timeout: float = 5.0
     smtp_timeout: float = 5.0
     catchall_enabled: bool = False
 
+    # Upstream DNS resolvers — bypass system resolver which can be unreliable
+    # for TXT records. Comma-separated list.
+    dns_nameservers: str = "1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4"
+
     # How many known-disposable domains must share an MX server before flagging it
     mx_cluster_threshold: int = 3
+
+    # Scoring model phase: "bootstrap" (stricter thresholds, conservative for month 1)
+    # or "calibrated" (steady-state thresholds, after ~1000 confirmed outcomes).
+    model_phase: str = "bootstrap"
+    model_version: str = "1.0.0"
+    default_risk_profile: str = "balanced"  # strict | balanced | permissive
 
     # Monthly request limits per tier (-1 = unlimited)
     tier_limit_free: int = 500

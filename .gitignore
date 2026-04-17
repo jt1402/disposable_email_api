@@ -19,6 +19,8 @@ build/
 .idea/
 *.swp
 .claude/
+CLAUDE.md
+
 # OS
 .DS_Store
 
