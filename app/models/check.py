@@ -209,4 +209,12 @@ class ReportRequest(BaseModel):
 
 class ReportResponse(BaseModel):
     accepted: bool
+    queued_for_review: bool = Field(
+        True, description="Report is queued — does not immediately affect scoring. "
+                          "Reports feed the domain_stats feedback loop and are weighted by reporter history."
+    )
+    review_sla_hours: int = Field(
+        4, description="Maximum turnaround time for human review of flagged reports."
+    )
+    report_id: str = Field("", description="Include in support tickets about this report.")
     message: str

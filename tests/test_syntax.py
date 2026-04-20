@@ -74,6 +74,46 @@ def test_cyrillic_homograph() -> None:
     assert "unicode_homograph_domain" in result.signals
 
 
+# ── Suspicious TLDs ───────────────────────────────────────────────────────────
+@pytest.mark.parametrize("email", [
+    "user@foo.xyz",
+    "user@bar.tk",
+    "user@baz.ml",
+    "user@qux.ga",
+    "user@whatever.cf",
+])
+def test_suspicious_tlds(email: str) -> None:
+    assert "suspicious_tld" in validate(email).signals
+
+
+def test_legit_tlds_not_flagged() -> None:
+    for email in ("user@example.com", "user@example.co.uk", "user@example.io"):
+        assert "suspicious_tld" not in validate(email).signals
+
+
+# ── Generated-domain patterns ─────────────────────────────────────────────────
+@pytest.mark.parametrize("email,expected", [
+    ("admin@abc1234567.xyz", True),        # 4+ digit run in SLD
+    ("test@server99999.com", True),        # long SLD + digit run
+    ("user@xkfhjqzbcdg.com", True),        # long all-consonant
+    ("user@example.com", False),           # normal
+    ("user@stripe.com", False),            # normal
+    ("user@foo123.com", False),            # 3 digits, short — below threshold
+    ("user@bcdfgh.com", False),            # 6 consonants, below length threshold
+])
+def test_generated_domain_pattern(email: str, expected: bool) -> None:
+    fired = "generated_domain_pattern" in validate(email).signals
+    assert fired is expected, f"{email}: expected {expected}, got {fired}"
+
+
+# ── Homograph normalisation to punycode ───────────────────────────────────────
+def test_homograph_domain_returned_as_punycode() -> None:
+    r = validate("user@exаmple.com")  # Cyrillic а
+    assert r.valid
+    assert r.domain.startswith("xn--"), f"expected punycode, got {r.domain!r}"
+    assert "unicode_homograph_domain" in r.signals
+
+
 # ── Domain extraction ─────────────────────────────────────────────────────────
 def test_domain_lowercased() -> None:
     result = validate("User@EXAMPLE.COM")

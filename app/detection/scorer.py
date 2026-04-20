@@ -142,6 +142,20 @@ SIGNAL_REGISTRY: dict[str, SignalDef] = {
         "no_dmarc_record", TIER_CORROBORATING, CATEGORY_INFRASTRUCTURE, 8,
         "Domain has no DMARC record.",
     ),
+    "suspicious_tld": SignalDef(
+        "suspicious_tld", TIER_CORROBORATING, CATEGORY_SYNTAX, 12,
+        "Domain uses a TLD with elevated abuse rates (.xyz, .tk, .ml, .ga, .cf, etc.).",
+    ),
+    "generated_domain_pattern": SignalDef(
+        "generated_domain_pattern", TIER_CORROBORATING, CATEGORY_SYNTAX, 20,
+        "Domain name matches a machine-generated or algorithmic pattern "
+        "(long digit runs, random-looking character sequences, or hash-like names).",
+    ),
+    "bulk_registrar": SignalDef(
+        "bulk_registrar", TIER_CORROBORATING, CATEGORY_INFRASTRUCTURE, 15,
+        "Domain was registered through a bulk / cheap-tier registrar frequently "
+        "used for disposable email infrastructure.",
+    ),
 
     # ── Layer 4: Trust signals (negative weights) ──────────────────────────
     "domain_age_over_5_years": SignalDef(

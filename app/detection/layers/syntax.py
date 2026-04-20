@@ -22,6 +22,41 @@ _HOMOGRAPH_CHARS: frozenset[str] = frozenset(
     "αβεηιοτυχΑΒΕΗΙΚΜΝΟΡΤΥΧ"  # Greek lookalikes
 )
 
+# TLDs with elevated abuse rates. Sources: Spamhaus, public phishing databases,
+# Freenom's former free-TLD family. .top and .cyou added based on blueprint's
+# abuse-TLD research. Not a ban — just +12 points toward the risk side.
+_SUSPICIOUS_TLDS: frozenset[str] = frozenset({
+    "tk", "ml", "ga", "cf",       # Freenom (many free / disposable registrations)
+    "xyz",                         # cheap and heavily abused
+    "top", "loan", "work", "click", "link",
+    "cyou", "rest", "icu", "buzz",
+    "men", "bid", "racing", "stream", "download",
+    "zip", "mov",                  # Google's ambiguous TLDs
+})
+
+# Generated-domain patterns — sld (second-level domain) that looks machine-made.
+# Matches: 4+ consecutive digits, long strings with no vowels, or alternating
+# letter/digit runs. False-positive rate on legit domains is low because short
+# legit names (<8 chars) don't match and we only run against the SLD.
+_DIGIT_RUN = re.compile(r"\d{4,}")
+_NO_VOWELS = re.compile(r"^[bcdfghjklmnpqrstvwxyz]{8,}$", re.IGNORECASE)
+_ALTERNATING = re.compile(r"(?:[a-z]\d){4,}", re.IGNORECASE)
+
+
+def _looks_generated(sld: str) -> bool:
+    """Heuristic: does this SLD look machine-generated?"""
+    if len(sld) < 8:
+        return False
+    if _DIGIT_RUN.search(sld):
+        return True
+    if _ALTERNATING.search(sld):
+        return True
+    # Long all-consonant string (e.g. xkfhjq...)
+    cleaned = sld.replace("-", "")
+    if _NO_VOWELS.match(cleaned):
+        return True
+    return False
+
 
 @dataclass
 class SyntaxResult:
@@ -128,4 +163,18 @@ def validate(email: str) -> SyntaxResult:
         if not _DOMAIN_LABEL.match(ascii_label):
             return SyntaxResult(valid=False, signals=["invalid_syntax"])
 
-    return SyntaxResult(valid=True, signals=signals, local=local, domain=domain.lower())
+    # ── 13. Suspicious TLD + generated-domain pattern ───────────────────────
+    # These run against the final (potentially punycode) form of the domain,
+    # so homograph-encoded names get their TLD check too.
+    final_domain = domain.lower()
+    final_labels = final_domain.split(".")
+    final_tld = final_labels[-1]
+    final_sld = final_labels[-2] if len(final_labels) >= 2 else ""
+
+    if final_tld in _SUSPICIOUS_TLDS:
+        signals.append("suspicious_tld")
+
+    if _looks_generated(final_sld):
+        signals.append("generated_domain_pattern")
+
+    return SyntaxResult(valid=True, signals=signals, local=local, domain=final_domain)
