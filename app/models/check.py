@@ -80,11 +80,22 @@ class Meta(BaseModel):
 class Verdict(BaseModel):
     recommendation: Recommendation
     risk_level: RiskLevel
-    disposable: bool
-    catch_all: bool | None = Field(
-        None, description="None = not probed (tier-gated or disabled)"
+    disposable: bool = Field(
+        description="True only when a known-disposable blocklist signal fired. "
+                    "False for other hard disqualifiers like no_mx_records."
     )
-    valid_address: bool
+    catch_all: bool | None = Field(
+        None, description="null = not probed (tier-gated or feature disabled). "
+                          "Use catch_all_checked to distinguish 'not run' from 'checked, not catch-all'."
+    )
+    catch_all_checked: bool = Field(
+        False, description="True if the SMTP catch-all probe actually ran. "
+                           "When false, catch_all is always null — feature is not yet enabled."
+    )
+    valid_address: bool = Field(
+        description="True only if syntax passes AND the domain has MX records. "
+                    "Not a pure syntax check — requires the domain to be deliverable."
+    )
     safe_to_send: bool
     summary: str = Field(description="One plain-English sentence explaining the verdict")
     degraded_mode: bool = False

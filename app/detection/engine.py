@@ -115,6 +115,30 @@ def _pick_cache_ttl(score: int, has_new_domain: bool, fraud_confirmed: bool, tru
     return _RESULT_CACHE_TTL_AMBIGUOUS
 
 
+_KNOWN_DISPOSABLE_SIGNALS: frozenset[str] = frozenset({
+    "known_disposable_domain",
+    "known_disposable_domain_high_confidence",
+})
+
+
+def _is_disposable(signal_names: list[str]) -> bool:
+    """
+    Only true when the engine matched a blocklist entry. `no_mx_records`,
+    `invalid_syntax`, and `domain_does_not_exist` are deliverability problems,
+    not evidence the domain is a disposable email provider.
+    """
+    return any(s in _KNOWN_DISPOSABLE_SIGNALS for s in signal_names)
+
+
+def _is_valid_address(syntax_ok: bool, has_mx: bool | None) -> bool:
+    """
+    True only when syntax passes AND the domain has MX records. has_mx=None
+    means the DNS check didn't run or was inconclusive — treat as not-valid
+    rather than assume.
+    """
+    return bool(syntax_ok and has_mx)
+
+
 def _signals_to_objects(signal_names: list[str]) -> tuple[list[Signal], list[Signal]]:
     """Convert signal name strings into Signal Pydantic objects using the registry."""
     fired: list[Signal] = []
@@ -149,11 +173,13 @@ def _build_hard_disqualifier_response(
     settings,
     path_taken: str = "fast",
     extra_checks: list[Check] | None = None,
+    dns_has_mx: bool | None = None,
 ) -> CheckResponse:
     elapsed = int((time.monotonic() - t_start) * 1000)
     th = scorer.thresholds_for(profile, phase)
 
     fired, trust = _signals_to_objects([disqualifier])
+    syntax_ok = disqualifier != "invalid_syntax"
 
     return CheckResponse(
         meta=Meta(
@@ -170,9 +196,10 @@ def _build_hard_disqualifier_response(
         verdict=Verdict(
             recommendation=scorer.Recommendation.BLOCK,
             risk_level=scorer.RiskLevel.CRITICAL,
-            disposable=disqualifier != "invalid_syntax",
+            disposable=_is_disposable([disqualifier]),
             catch_all=None,
-            valid_address=disqualifier != "invalid_syntax",
+            catch_all_checked=False,
+            valid_address=_is_valid_address(syntax_ok, dns_has_mx),
             safe_to_send=False,
             summary=scorer.build_summary(
                 [disqualifier], [], 100, scorer.Recommendation.BLOCK,
@@ -316,6 +343,7 @@ async def check(
                 request_id=request_id, email=email, domain=domain,
                 disqualifier=name, t_start=t_start, profile=profile, phase=phase,
                 settings=settings, path_taken="standard", extra_checks=extra_checks,
+                dns_has_mx=dns_result.has_mx,
             )
             await _cache_response(redis, cache_key, response, has_new_domain=False, fraud=True, trusted=False)
             _record_async(api_key_id, response)
@@ -407,7 +435,12 @@ async def check(
         catch_all=catch_all_value,
     )
 
-    disposable = rec in (scorer.Recommendation.BLOCK, scorer.Recommendation.ALLOW_WITH_FLAG) and breakdown.final_clamped >= thresholds.flag
+    # `disposable` is only true when a blocklist signal fired. Deliverability
+    # problems (no MX, NXDOMAIN) and syntax errors handled in the hard
+    # disqualifier path — they reach this point only if they didn't fire.
+    disposable = _is_disposable(all_signal_names)
+    valid_address = _is_valid_address(syntax_ok=True, has_mx=dns_result.has_mx)
+    catch_all_checked_flag = ca_result is not None and ca_result.checked
 
     response = CheckResponse(
         meta=Meta(
@@ -420,7 +453,8 @@ async def check(
         verdict=Verdict(
             recommendation=rec, risk_level=rlvl,
             disposable=disposable, catch_all=catch_all_value,
-            valid_address=True,
+            catch_all_checked=catch_all_checked_flag,
+            valid_address=valid_address,
             safe_to_send=(rec == scorer.Recommendation.ALLOW),
             summary=summary,
         ),
@@ -520,8 +554,10 @@ def _rehydrate_cached_response(
     # Per-request overrides
     response.meta.request_id = request_id
     response.meta.email = email
+    response.meta.domain = domain
     response.meta.latency_ms = int((time.monotonic() - t_start) * 1000)
     response.meta.cached = True
+    response.meta.path_taken = "cached"
     response.meta.cache_age_seconds = None  # TTL inspection would need a TTL call; skip for now
 
     # Re-resolve thresholds under current profile
