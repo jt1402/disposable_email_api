@@ -98,9 +98,12 @@ def validate(email: str) -> SyntaxResult:
             signals.append("unicode_homograph_domain")
         else:
             signals.append("non_ascii_domain")
-        # Attempt IDNA encoding to validate it's a real IDN domain
+        # Convert to punycode so downstream DNS/WHOIS lookups operate on the
+        # actual DNS name (xn--...) rather than the unicode glyphs. This
+        # prevents homograph attacks from piggybacking on the lookalike
+        # domain's age / trust signals.
         try:
-            domain.encode("idna")
+            domain = domain.encode("idna").decode("ascii")
         except (UnicodeError, UnicodeDecodeError):
             return SyntaxResult(valid=False, signals=["invalid_syntax"])
 

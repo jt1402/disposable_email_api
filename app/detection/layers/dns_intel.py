@@ -330,13 +330,19 @@ async def check(domain: str, redis: RedisClient) -> DnsResult:
         result="present" if has_dkim is True else "selector_not_found",
     ))
 
+    # Treat "lookup failed" and "definitely absent" as equivalent for scoring:
+    # a legitimate domain almost always resolves cleanly. We still record a
+    # confidence penalty when the lookup failed so the recommendation layer
+    # knows the signal was softer.
     if has_spf is None:
         penalties.append("spf_lookup_failed")
+        signals.append("no_spf_record")
     elif not has_spf:
         signals.append("no_spf_record")
 
     if has_dmarc is None:
         penalties.append("dmarc_lookup_failed")
+        signals.append("no_dmarc_record")
     elif not has_dmarc:
         signals.append("no_dmarc_record")
 

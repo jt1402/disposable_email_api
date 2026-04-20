@@ -93,6 +93,10 @@ def _promote_compound_signals(signal_names: list[str]) -> list[str]:
     Named compounds are qualitatively stronger than their parts. Replace
     components with the compound to avoid double-counting.
 
+    Also strips age-based trust signals when a homograph is detected — even
+    if WHOIS somehow resolved against the lookalike, the attacker should
+    never earn age trust for impersonating a legit domain.
+
     Current compounds:
       catch_all_domain + (new_domain_30d | domain_age_under_7_days)
         → catch_all_new_domain  (removes catch_all_domain + the age signal)
@@ -102,6 +106,19 @@ def _promote_compound_signals(signal_names: list[str]) -> list[str]:
     if "catch_all_domain" in s and any(x in s for x in new_domain_age_signals):
         s = [x for x in s if x != "catch_all_domain" and x not in new_domain_age_signals]
         s.append("catch_all_new_domain")
+
+    # Belt-and-braces against homograph + age-trust exploit: any age-based
+    # trust / new-domain signal accompanying a homograph detection is
+    # automatically suspect — the WHOIS lookup may have resolved against
+    # the lookalike domain. Drop them.
+    if "unicode_homograph_domain" in s:
+        homograph_suppressed = {
+            "domain_age_over_5_years",
+            "domain_age_over_2_years",
+            "mx_known_legitimate_host",  # MX may also mimic the target
+        }
+        s = [x for x in s if x not in homograph_suppressed]
+
     return s
 
 
@@ -244,10 +261,11 @@ async def check(
     api_key_id: str = "",
     tier: str = "free",
     risk_profile_header: str | None = None,
+    request_id: str | None = None,
 ) -> CheckResponse:
     settings = get_settings()
     t_start = time.monotonic()
-    request_id = _generate_request_id()
+    request_id = request_id or _generate_request_id()
 
     try:
         phase = ModelPhase(settings.model_phase)

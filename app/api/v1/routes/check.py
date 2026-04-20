@@ -12,7 +12,7 @@ Returns the 5-block CheckResponse (meta / verdict / score / signals / checks).
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from app.api.v1.deps import require_api_key
 from app.detection import engine
@@ -33,8 +33,13 @@ def _profile_override(header_value: str | None, auth: VerifyResult) -> str | Non
     return None
 
 
+def _request_id(request: Request) -> str:
+    return getattr(request.state, "request_id", "") or ""
+
+
 @router.get("/check", response_model=CheckResponse, summary="Check an email address")
 async def check_get(
+    request: Request,
     email: Annotated[str | None, Query(max_length=254)] = None,
     x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
     auth: VerifyResult = Depends(require_api_key),
@@ -48,11 +53,13 @@ async def check_get(
         api_key_id=auth.key_id,
         tier=auth.tier,
         risk_profile_header=_profile_override(x_risk_profile, auth),
+        request_id=_request_id(request),
     )
 
 
 @router.post("/check", response_model=CheckResponse, summary="Check an email address")
 async def check_post(
+    request: Request,
     body: CheckRequest,
     x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
     auth: VerifyResult = Depends(require_api_key),
@@ -63,4 +70,5 @@ async def check_post(
         api_key_id=auth.key_id,
         tier=auth.tier,
         risk_profile_header=_profile_override(x_risk_profile, auth),
+        request_id=_request_id(request),
     )
