@@ -94,6 +94,10 @@ async def create_checkout(body: CheckoutBody, current: CurrentUser) -> CheckoutR
             session_kwargs["customer"] = stripe_customer_id
         else:
             session_kwargs["customer_email"] = current.email
+            # mode=payment defaults to customer_creation='if_required' which often
+            # skips customer creation entirely, leaving session.customer null and
+            # our has_purchased gate stuck at False. Force creation every time.
+            session_kwargs["customer_creation"] = "always"
         session = stripe.checkout.Session.create(**session_kwargs)
     except stripe.StripeError as exc:
         logger.error("Stripe checkout.create failed for user %s: %s", current.id, exc)
