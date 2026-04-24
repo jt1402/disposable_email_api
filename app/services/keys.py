@@ -15,7 +15,6 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from app.core.config import get_settings
 from app.services import db, unkey
 
 logger = logging.getLogger(__name__)
@@ -71,12 +70,13 @@ async def create_for_user(
     refuses (and logs the error). The raw key secret is on the returned DTO
     exactly once — subsequent reads via list_for_user() only expose the prefix.
     """
-    settings = get_settings()
-    monthly_limit = settings.tier_limit(tier)
+    # Credit-based billing: Unkey no longer enforces a monthly limit —
+    # exhausting the owner's User.credit_balance_checks is what returns 402.
+    # Pass -1 so unkey.create_key skips the remaining/refill config entirely.
     result = await unkey.create_key(
         owner_id=str(user_id),
         tier=tier,
-        monthly_limit=monthly_limit,
+        monthly_limit=-1,
         name=name or f"{tier} key",
     )
     if result.error or not result.key_id:
