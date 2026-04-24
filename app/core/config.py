@@ -28,6 +28,21 @@ class Settings(BaseSettings):
     stripe_price_growth: str = ""
     stripe_price_pro: str = ""
 
+    # Email (Resend) — magic links, verification mails
+    resend_api_key: str = ""
+    resend_from_email: str = "VerifyMail <noreply@verifymail.dev>"
+
+    # Auth / session
+    # Base URL of the Next.js frontend — magic-link emails embed this.
+    app_base_url: str = "http://localhost:3000"
+    # Session cookie TTL in days. 30 days is a typical dashboard session.
+    session_ttl_days: int = 30
+    # Magic-link token TTL in minutes.
+    magic_link_ttl_minutes: int = 15
+    # Comma-separated list of origins allowed by CORS in production.
+    # Empty string → wildcard (dev default). Lock this down before going live.
+    cors_allow_origins: str = ""
+
     # Detection timeouts (seconds)
     dns_timeout: float = 2.0
     whois_timeout: float = 5.0

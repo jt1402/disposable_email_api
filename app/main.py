@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.v1.routes import check, health, report, webhooks
+from app.api.v1.routes import auth, billing, check, health, keys, report, usage, webhooks
 from app.core.config import get_settings
 from app.models.errors import ErrorDetail, internal_error, validation_error
 from app.services import db as database
@@ -56,10 +56,19 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # CORS: empty CORS_ALLOW_ORIGINS → wildcard (dev). Production MUST set it.
+    origins_raw = settings.cors_allow_origins.strip()
+    allow_origins: list[str] = (
+        [o.strip() for o in origins_raw.split(",") if o.strip()] if origins_raw else ["*"]
+    )
+    # Credentials (Authorization header) can't be used with wildcard origin per spec.
+    allow_credentials = origins_raw != ""
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Tighten for production
-        allow_methods=["GET", "POST"],
+        allow_origins=allow_origins,
+        allow_credentials=allow_credentials,
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
 
@@ -75,6 +84,10 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(check.router, prefix="/v1")
     app.include_router(report.router, prefix="/v1")
+    app.include_router(auth.router, prefix="/v1")
+    app.include_router(keys.router, prefix="/v1")
+    app.include_router(usage.router, prefix="/v1")
+    app.include_router(billing.router, prefix="/v1")
     app.include_router(webhooks.router)
 
     # ── Unified error envelope ────────────────────────────────────────────────

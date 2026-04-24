@@ -72,6 +72,33 @@ def validation_error(message: str) -> ErrorDetail:
     )
 
 
+def invalid_session_error() -> ErrorDetail:
+    return ErrorDetail(
+        code="invalid_session",
+        http_status=401,
+        message="You are not signed in. Log in to access this resource.",
+        docs_url=f"{DOCS_BASE}/authentication",
+    )
+
+
+def invalid_magic_link_error() -> ErrorDetail:
+    return ErrorDetail(
+        code="invalid_magic_link",
+        http_status=400,
+        message="This link is invalid, expired, or has already been used. Request a new one.",
+        docs_url=f"{DOCS_BASE}/authentication",
+    )
+
+
+def email_send_failed_error() -> ErrorDetail:
+    return ErrorDetail(
+        code="email_send_failed",
+        http_status=502,
+        message="We could not send the verification email. Please try again in a moment.",
+        docs_url=f"{DOCS_BASE}/authentication",
+    )
+
+
 def internal_error() -> ErrorDetail:
     return ErrorDetail(
         code="internal_error",

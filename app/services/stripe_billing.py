@@ -2,12 +2,12 @@
 Stripe billing integration.
 
 Handles subscription webhooks to provision/revoke Unkey API keys automatically.
-Flow: checkout.session.completed → create Unkey key → store in DB
-      customer.subscription.deleted → revoke Unkey key → update DB
+Flow: checkout.session.completed → upsert User by email → provision Unkey key
+      customer.subscription.deleted → revoke Unkey keys for that user
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import stripe
 from sqlalchemy import select
@@ -29,15 +29,14 @@ def _price_to_tier(price_id: str) -> str:
 
 async def handle_checkout_completed(session: dict) -> None:
     """
-    Called when a new subscription payment succeeds.
-    Creates customer record + Unkey API key.
+    New or reactivated paid subscription. Idempotent: if the user already has
+    an active key on this tier we skip reprovisioning.
     """
     settings = get_settings()
-    customer_email = (session.get("customer_details") or {}).get("email", "")
+    customer_email = ((session.get("customer_details") or {}).get("email") or "").strip().lower()
     stripe_customer_id = session.get("customer", "")
     price_id = ""
 
-    # Get the price from the line items
     try:
         stripe.api_key = settings.stripe_secret_key
         line_items = stripe.checkout.Session.list_line_items(session["id"])
@@ -49,65 +48,72 @@ async def handle_checkout_completed(session: dict) -> None:
     tier = _price_to_tier(price_id)
     monthly_limit = settings.tier_limit(tier)
 
-    async with db.get_session() as session_db:
-        # Upsert customer
-        result = await session_db.execute(
-            select(db.Customer).where(db.Customer.stripe_customer_id == stripe_customer_id)
-        )
-        customer = result.scalar_one_or_none()
-        if not customer:
-            customer = db.Customer(
-                stripe_customer_id=stripe_customer_id,
-                email=customer_email,
-            )
-            session_db.add(customer)
-            await session_db.flush()
+    if not customer_email:
+        logger.error("checkout.session.completed without customer email; cannot link to user")
+        return
 
-        # Create Unkey key
+    async with db.get_session() as s:
+        # Upsert user by email. Paid checkout without a prior signup is allowed:
+        # the email from Stripe becomes the user's email; first magic-link login
+        # afterward will mark it verified.
+        result = await s.execute(select(db.User).where(db.User.email == customer_email))
+        user = result.scalar_one_or_none()
+        if user is None:
+            user = db.User(email=customer_email, stripe_customer_id=stripe_customer_id)
+            s.add(user)
+            await s.flush()
+        elif not user.stripe_customer_id:
+            user.stripe_customer_id = stripe_customer_id
+
         key_result = await unkey.create_key(
-            owner_id=str(customer.id),
+            owner_id=str(user.id),
             tier=tier,
             monthly_limit=monthly_limit,
             name=f"{tier} — {customer_email}",
         )
-
         if key_result.error:
-            logger.error("Failed to create Unkey key for customer %s: %s", customer.id, key_result.error)
+            logger.error("Failed to create Unkey key for user %s: %s", user.id, key_result.error)
+            await s.commit()
             return
 
-        api_key_record = db.ApiKey(
-            customer_id=customer.id,
-            unkey_key_id=key_result.key_id,
-            tier=tier,
+        s.add(
+            db.ApiKey(
+                user_id=user.id,
+                unkey_key_id=key_result.key_id,
+                unkey_key_prefix=(key_result.key or "")[:8],
+                name=f"{tier.capitalize()} plan",
+                tier=tier,
+            )
         )
-        session_db.add(api_key_record)
-        await session_db.commit()
+        await s.commit()
 
-    logger.info("Provisioned %s key for customer %s", tier, stripe_customer_id)
+    logger.info("Provisioned %s key for user %s", tier, customer_email)
 
 
 async def handle_subscription_deleted(subscription: dict) -> None:
-    """Revoke the API key when a subscription is cancelled."""
+    """Revoke all active keys for the subscription's customer."""
     stripe_customer_id = subscription.get("customer", "")
+    if not stripe_customer_id:
+        return
 
-    async with db.get_session() as session_db:
-        result = await session_db.execute(
-            select(db.Customer).where(db.Customer.stripe_customer_id == stripe_customer_id)
+    async with db.get_session() as s:
+        result = await s.execute(
+            select(db.User).where(db.User.stripe_customer_id == stripe_customer_id)
         )
-        customer = result.scalar_one_or_none()
-        if not customer:
+        user = result.scalar_one_or_none()
+        if not user:
             return
 
-        keys_result = await session_db.execute(
+        keys_result = await s.execute(
             select(db.ApiKey).where(
-                db.ApiKey.customer_id == customer.id,
+                db.ApiKey.user_id == user.id,
                 db.ApiKey.revoked_at.is_(None),
             )
         )
         for key in keys_result.scalars():
             await unkey.revoke_key(key.unkey_key_id)
-            key.revoked_at = datetime.now(timezone.utc)
+            key.revoked_at = datetime.now(UTC)
 
-        await session_db.commit()
+        await s.commit()
 
-    logger.info("Revoked keys for customer %s", stripe_customer_id)
+    logger.info("Revoked keys for stripe_customer %s", stripe_customer_id)

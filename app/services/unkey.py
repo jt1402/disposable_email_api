@@ -38,9 +38,12 @@ class CreateKeyResult:
 async def verify_key(api_key: str) -> VerifyResult:
     settings = get_settings()
     if not settings.unkey_api_id:
-        # Dev mode: no Unkey configured, allow all keys
+        # Dev mode: no Unkey configured, accept all keys. We return the raw key
+        # as the key_id so dev-mode keys round-trip cleanly: the `api_keys` row
+        # we wrote at create time has unkey_key_id == <raw key>, and the usage
+        # endpoints' `checks.api_key_id IN (<unkey_key_ids>)` filter now matches.
         logger.warning("UNKEY_API_ID not set — running in dev mode, all keys accepted")
-        return VerifyResult(valid=True, key_id="dev", owner_id="dev", tier="pro")
+        return VerifyResult(valid=True, key_id=api_key, owner_id="dev", tier="pro")
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -82,8 +85,17 @@ async def create_key(
     name: str = "",
 ) -> CreateKeyResult:
     settings = get_settings()
-    if not settings.unkey_root_key:
-        return CreateKeyResult(error="UNKEY_ROOT_KEY not configured")
+    if not settings.unkey_root_key or not settings.unkey_api_id:
+        # Dev mode: mint a deterministic-looking fake key so local flows
+        # (signup → auto-provision → dashboard) work end-to-end without Unkey.
+        # The fake key will be accepted by the dev-mode verify_key() below.
+        import secrets as _secrets
+
+        fake = f"dc_dev_{_secrets.token_hex(12)}"
+        # In dev mode, key_id == raw key so that verify_key round-trips cleanly
+        # (see verify_key dev-mode branch above). Real Unkey gives separate ids.
+        logger.warning("UNKEY not configured — issuing dev-mode key for owner=%s", owner_id)
+        return CreateKeyResult(key=fake, key_id=fake)
 
     payload: dict = {
         "apiId": settings.unkey_api_id,

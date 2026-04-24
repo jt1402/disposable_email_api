@@ -31,3 +31,4 @@ htmlcov/
 
 # Alembic
 alembic/versions/*.pyc
+docs.csv
