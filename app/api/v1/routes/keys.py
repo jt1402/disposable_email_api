@@ -20,9 +20,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/keys", tags=["keys"])
 
-# Unpaid accounts are capped at 1 active key. The cap lifts the moment a
-# bundle purchase is recorded via the Stripe webhook (sets stripe_customer_id).
+# Active-key caps. Unpaid accounts are held to a single key; paid accounts get
+# headroom for rotation / per-environment keys but not infinite (each key costs
+# us an Unkey slot). Bump _PAID_KEY_LIMIT if a real customer asks.
 _FREE_KEY_LIMIT = 1
+_PAID_KEY_LIMIT = 10
 
 
 class CreateKeyBody(BaseModel):
@@ -67,28 +69,39 @@ async def create_key(body: CreateKeyBody, current: CurrentUser) -> CreatedKeyRes
     async with db.get_session() as s:
         user = await s.get(db.User, current.id)
         has_purchased = bool(user and user.stripe_customer_id)
-        if not has_purchased:
-            active_count = (
-                await s.execute(
-                    select(func.count())
-                    .select_from(db.ApiKey)
-                    .where(db.ApiKey.user_id == current.id)
-                    .where(db.ApiKey.revoked_at.is_(None))
-                )
-            ).scalar_one() or 0
-            if active_count >= _FREE_KEY_LIMIT:
-                raise HTTPException(
-                    status_code=403,
-                    detail=ErrorDetail(
-                        code="free_key_limit_reached",
-                        http_status=403,
-                        message=(
-                            "Free accounts are limited to one API key. "
-                            "Buy a credit bundle to unlock additional keys."
-                        ),
-                        upgrade_url="/dashboard/billing",
-                    ).model_dump(),
-                )
+        active_count = (
+            await s.execute(
+                select(func.count())
+                .select_from(db.ApiKey)
+                .where(db.ApiKey.user_id == current.id)
+                .where(db.ApiKey.revoked_at.is_(None))
+            )
+        ).scalar_one() or 0
+        if not has_purchased and active_count >= _FREE_KEY_LIMIT:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorDetail(
+                    code="free_key_limit_reached",
+                    http_status=403,
+                    message=(
+                        "Free accounts are limited to one API key. "
+                        "Buy a credit bundle to unlock additional keys."
+                    ),
+                    upgrade_url="/dashboard/billing",
+                ).model_dump(),
+            )
+        if has_purchased and active_count >= _PAID_KEY_LIMIT:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorDetail(
+                    code="key_limit_reached",
+                    http_status=403,
+                    message=(
+                        f"You've reached the {_PAID_KEY_LIMIT}-key limit. "
+                        "Revoke an unused key or contact support to raise the cap."
+                    ),
+                ).model_dump(),
+            )
 
     created = await keys_svc.create_for_user(user_id=current.id, name=body.name)
     if created is None:
