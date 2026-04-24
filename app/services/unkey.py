@@ -22,7 +22,6 @@ class VerifyResult:
     valid: bool
     key_id: str = ""
     owner_id: str = ""
-    tier: str = "free"
     remaining: int | None = None
     risk_profile: str = ""  # from meta.risk_profile — empty → use server default
     error: str = ""
@@ -43,7 +42,7 @@ async def verify_key(api_key: str) -> VerifyResult:
         # we wrote at create time has unkey_key_id == <raw key>, and the usage
         # endpoints' `checks.api_key_id IN (<unkey_key_ids>)` filter now matches.
         logger.warning("UNKEY_API_ID not set — running in dev mode, all keys accepted")
-        return VerifyResult(valid=True, key_id=api_key, owner_id="dev", tier="pro")
+        return VerifyResult(valid=True, key_id=api_key, owner_id="dev")
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -63,27 +62,23 @@ async def verify_key(api_key: str) -> VerifyResult:
     if not data.get("valid"):
         return VerifyResult(valid=False, error=data.get("code", "invalid_key"))
 
-    # meta.tier is stored when the key is created (set per Stripe plan)
     meta = data.get("meta") or {}
-    tier = meta.get("tier", "free")
     risk_profile = meta.get("risk_profile", "")
 
     return VerifyResult(
         valid=True,
         key_id=data.get("keyId", ""),
         owner_id=data.get("externalId", data.get("ownerId", "")),
-        tier=tier,
         remaining=(data.get("credits") or {}).get("remaining", data.get("remaining")),
         risk_profile=risk_profile,
     )
 
 
-async def create_key(
-    owner_id: str,
-    tier: str,
-    monthly_limit: int,
-    name: str = "",
-) -> CreateKeyResult:
+async def create_key(owner_id: str, name: str = "") -> CreateKeyResult:
+    """
+    Credit-based billing: Unkey does not enforce a monthly limit. Credits are
+    drawn from the owner's User.credit_balance_checks on each /v1/check.
+    """
     settings = get_settings()
     if not settings.unkey_root_key or not settings.unkey_api_id:
         # Dev mode: mint a deterministic-looking fake key so local flows
@@ -100,20 +95,9 @@ async def create_key(
     payload: dict = {
         "apiId": settings.unkey_api_id,
         "externalId": owner_id,
-        "meta": {"tier": tier},
-        "name": name or f"{tier} key for {owner_id}",
+        "name": name or f"API key for {owner_id}",
         "prefix": "dc",  # "dc_" prefix — recognisable brand prefix
     }
-
-    if monthly_limit > 0:
-        payload["credits"] = {
-            "remaining": monthly_limit,
-            "refill": {
-                "interval": "monthly",
-                "amount": monthly_limit,
-                "refillDay": 1,
-            },
-        }
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:

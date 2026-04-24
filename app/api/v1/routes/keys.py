@@ -27,7 +27,6 @@ class CreateKeyBody(BaseModel):
 class KeySummary(BaseModel):
     id: int
     name: str
-    tier: str
     prefix: str
     created_at: str
     last_used_at: str | None
@@ -37,7 +36,6 @@ class KeySummary(BaseModel):
 class CreatedKeyResponse(BaseModel):
     id: int
     name: str
-    tier: str
     prefix: str
     key: str = Field(description="Raw secret — shown once. Store it securely.")
 
@@ -46,7 +44,6 @@ def _summary(k: keys_svc.ApiKeyDTO) -> KeySummary:
     return KeySummary(
         id=k.id,
         name=k.name,
-        tier=k.tier,
         prefix=k.prefix,
         created_at=k.created_at.isoformat(),
         last_used_at=k.last_used_at.isoformat() if k.last_used_at else None,
@@ -62,9 +59,7 @@ async def list_keys(current: CurrentUser) -> list[KeySummary]:
 
 @router.post("", response_model=CreatedKeyResponse, status_code=201)
 async def create_key(body: CreateKeyBody, current: CurrentUser) -> CreatedKeyResponse:
-    created = await keys_svc.create_for_user(
-        user_id=current.id, name=body.name, tier="free"
-    )
+    created = await keys_svc.create_for_user(user_id=current.id, name=body.name)
     if created is None:
         raise HTTPException(
             status_code=502,
@@ -77,7 +72,6 @@ async def create_key(body: CreateKeyBody, current: CurrentUser) -> CreatedKeyRes
     return CreatedKeyResponse(
         id=created.id,
         name=created.name,
-        tier=created.tier,
         prefix=created.prefix,
         key=created.key,
     )

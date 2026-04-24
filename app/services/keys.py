@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 class ApiKeyDTO:
     id: int
     name: str
-    tier: str
     prefix: str
     created_at: datetime
     last_used_at: datetime | None
@@ -37,14 +36,12 @@ class CreatedApiKey:
     key: str  # raw secret — show ONCE, never again
     prefix: str
     name: str
-    tier: str
 
 
 def _to_dto(k: db.ApiKey) -> ApiKeyDTO:
     return ApiKeyDTO(
         id=k.id,
-        name=k.name or f"{k.tier} key",
-        tier=k.tier,
+        name=k.name or "API key",
         prefix=k.unkey_key_prefix or "",
         created_at=k.created_at,
         last_used_at=k.last_used_at,
@@ -62,23 +59,14 @@ async def list_for_user(user_id: int) -> list[ApiKeyDTO]:
         return [_to_dto(k) for k in result.scalars()]
 
 
-async def create_for_user(
-    user_id: int, name: str, tier: str = "free"
-) -> CreatedApiKey | None:
+async def create_for_user(user_id: int, name: str) -> CreatedApiKey | None:
     """
     Provision a new Unkey key and mirror it locally. Returns None if Unkey
     refuses (and logs the error). The raw key secret is on the returned DTO
     exactly once — subsequent reads via list_for_user() only expose the prefix.
     """
-    # Credit-based billing: Unkey no longer enforces a monthly limit —
-    # exhausting the owner's User.credit_balance_checks is what returns 402.
-    # Pass -1 so unkey.create_key skips the remaining/refill config entirely.
-    result = await unkey.create_key(
-        owner_id=str(user_id),
-        tier=tier,
-        monthly_limit=-1,
-        name=name or f"{tier} key",
-    )
+    key_name = name or "API key"
+    result = await unkey.create_key(owner_id=str(user_id), name=key_name)
     if result.error or not result.key_id:
         logger.error("Unkey create_key failed for user %s: %s", user_id, result.error)
         return None
@@ -89,8 +77,7 @@ async def create_for_user(
             user_id=user_id,
             unkey_key_id=result.key_id,
             unkey_key_prefix=prefix,
-            name=name or f"{tier.capitalize()} key",
-            tier=tier,
+            name=key_name,
         )
         s.add(row)
         await s.commit()
@@ -100,7 +87,6 @@ async def create_for_user(
             key=result.key,
             prefix=prefix,
             name=row.name,
-            tier=row.tier,
         )
 
 

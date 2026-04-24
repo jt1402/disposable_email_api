@@ -4,7 +4,7 @@ Detection Engine — orchestrates all 5 layers and assembles the 5-block respons
 Flow:
   1. Syntax (sync, ~1ms)            — fail fast if malformed
   2. Blocklist + DNS + Behavioral   — parallel, 50-200ms
-  3. Catch-all (tier-gated)         — optional, ~500ms
+  3. Catch-all (feature-gated)      — optional, ~500ms, off by default
   4. Compound-signal promotion      — catch_all + new_domain → catch_all_new_domain
   5. Score + confidence + profile   — produce breakdown, recommendation, summary
   6. Build 5-block CheckResponse
@@ -259,7 +259,6 @@ async def check(
     email: str,
     redis: RedisClient,
     api_key_id: str = "",
-    tier: str = "free",
     risk_profile_header: str | None = None,
     request_id: str | None = None,
 ) -> CheckResponse:
@@ -367,16 +366,12 @@ async def check(
             _record_async(api_key_id, response)
             return response
 
-    # ── Layer 5: Catch-all (tier-gated) ──────────────────────────────────────
+    # ── Layer 5: Catch-all (feature-gated) ──────────────────────────────────
     ca_result: catchall.CatchAllResult | None = None
     catch_all_value: bool | None = None
     catch_all_probability = 0.0
     path_taken = "standard"
-    if (
-        settings.catchall_enabled
-        and tier in ("pro", "enterprise")
-        and dns_result.has_mx
-    ):
+    if settings.catchall_enabled and dns_result.has_mx:
         ca_result = await catchall.check(domain, dns_result.mx_hosts, redis, settings.smtp_timeout)
         all_signal_names += ca_result.signals
         confidence_penalties += ca_result.confidence_penalties

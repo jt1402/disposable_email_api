@@ -41,9 +41,9 @@ def _request_id(request: Request) -> str:
 async def _charge_or_402(auth: VerifyResult) -> None:
     """
     Deduct one credit from the key owner's balance, or raise 402.
-    Dev-mode keys (owner_id='dev') and enterprise keys (unlimited) skip charging.
+    Dev-mode keys (owner_id='dev') skip charging.
     """
-    if auth.owner_id == "dev" or auth.tier == "enterprise":
+    if auth.owner_id == "dev":
         return
     if not auth.owner_id.isdigit():
         return  # unknown owner shape; let the request through rather than falsely 402
@@ -67,7 +67,6 @@ async def check_get(
     return await engine.check(
         email, redis,
         api_key_id=auth.key_id,
-        tier=auth.tier,
         risk_profile_header=_profile_override(x_risk_profile, auth),
         request_id=_request_id(request),
     )
@@ -85,7 +84,6 @@ async def check_post(
     return await engine.check(
         body.email, redis,
         api_key_id=auth.key_id,
-        tier=auth.tier,
         risk_profile_header=_profile_override(x_risk_profile, auth),
         request_id=_request_id(request),
     )

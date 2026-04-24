@@ -166,7 +166,7 @@ async def verify(body: VerifyRequest, request: Request) -> VerifyResponse:
         raise HTTPException(status_code=400, detail=invalid_magic_link_error().model_dump())
     user, purpose = consumed
 
-    # Signup flow: mark email verified AND auto-provision one free-tier API key
+    # Signup flow: mark email verified AND auto-provision a default API key
     # so the user lands in the dashboard with the "100 free checks" promise
     # already fulfilled — zero extra clicks to first value.
     if purpose == "signup_verify" and user.email_verified_at is None:
@@ -175,7 +175,7 @@ async def verify(body: VerifyRequest, request: Request) -> VerifyResponse:
         if refreshed is not None:
             user = refreshed
         try:
-            await keys_svc.create_for_user(user.id, name="Default key", tier="free")
+            await keys_svc.create_for_user(user.id, name="Default key")
         except Exception as exc:  # noqa: BLE001 — never block signup on key provisioning
             logger.error("Failed to auto-provision key for user %s: %s", user.id, exc)
 

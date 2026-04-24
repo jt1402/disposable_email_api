@@ -5,7 +5,7 @@ Tables:
   users              — dashboard user accounts (magic-link signup, optional Stripe link)
   user_sessions      — active session tokens (hashed) per user
   magic_link_tokens  — single-use tokens for signup verification / passwordless login
-  api_keys           — one per Unkey key, linked to user + tier
+  api_keys           — one per Unkey key, linked to user
   domain_reports     — customer feedback via POST /v1/report
   checks             — append-only log, one row per /v1/check request (domain only)
   domain_stats       — rolled-up per-domain counters, fuels auto-blocklist promotion
@@ -34,7 +34,8 @@ class User(Base):
     """
     Dashboard user account. Created via magic-link signup from the landing page.
     A user can own multiple API keys; Stripe customer link is populated on first
-    paid checkout (nullable until then — free-tier users have no Stripe presence).
+    paid checkout (nullable until then — users with only the signup grant have
+    no Stripe presence).
     """
     __tablename__ = "users"
 
@@ -107,7 +108,7 @@ class MagicLinkToken(Base):
 class ApiKey(Base):
     """
     Local mirror of an Unkey key. The secret lives only in Unkey; we keep the
-    public-safe metadata (name, tier, last_used_at, owner) here so the dashboard
+    public-safe metadata (name, last_used_at, owner) here so the dashboard
     can list/revoke without hammering Unkey.
 
     `unkey_key_prefix` stores the first 8 chars of the key (e.g. "dc_abcd")
@@ -120,7 +121,6 @@ class ApiKey(Base):
     unkey_key_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     unkey_key_prefix: Mapped[str] = mapped_column(String(16), default="")
     name: Mapped[str] = mapped_column(String(80), default="")
-    tier: Mapped[str] = mapped_column(String(32), default="free")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

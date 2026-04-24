@@ -32,38 +32,30 @@ router = APIRouter()
 _THROWAWAY_REPORT_WEIGHT = 3
 _REVIEW_SLA_HOURS = 4
 
-# Per-key hourly rate limits on /v1/report. Free tier gets conservative limits
-# to prevent feedback-loop spoofing; higher tiers get more headroom.
-_REPORT_LIMITS: dict[str, int] = {
-    "free": 10,
-    "starter": 50,
-    "growth": 200,
-    "pro": 1000,
-    "enterprise": 10_000,
-}
+# Per-key hourly rate limit on /v1/report. Reports are cheap but high volume
+# would be a feedback-loop-spoofing vector — cap all keys at the same ceiling.
+_REPORT_HOURLY_LIMIT = 100
 
 
-async def _check_report_rate_limit(api_key_id: str, tier: str, redis: RedisClient) -> tuple[int, int]:
+async def _check_report_rate_limit(api_key_id: str, redis: RedisClient) -> tuple[int, int]:
     """Returns (used, limit). Raises 429 when exceeded."""
-    limit = _REPORT_LIMITS.get(tier, _REPORT_LIMITS["free"])
     key = f"report_rate:{api_key_id}:hourly"
     count = await redis.incr(key)
     if count == 1:
         await redis.expire(key, 3600)
-    if count > limit:
+    if count > _REPORT_HOURLY_LIMIT:
         raise HTTPException(
             status_code=429,
             detail=ErrorDetail(
                 code="report_rate_limit_exceeded",
                 http_status=429,
-                message=f"You've submitted {count - 1} of {limit} reports allowed per hour on the {tier} tier.",
-                limit=limit,
+                message=f"You've submitted {count - 1} of {_REPORT_HOURLY_LIMIT} reports allowed this hour.",
+                limit=_REPORT_HOURLY_LIMIT,
                 used=count - 1,
-                upgrade_url="https://disposablecheck.com/pricing",
                 docs_url=f"{DOCS_BASE}/report",
             ).model_dump(),
         )
-    return count, limit
+    return count, _REPORT_HOURLY_LIMIT
 
 
 async def _is_high_confidence_disposable(domain: str, redis: RedisClient) -> bool:
@@ -92,16 +84,15 @@ async def report(
     redis = get_redis()
 
     # ── Rate limit (raises 429) ──────────────────────────────────────────────
-    await _check_report_rate_limit(auth.key_id, auth.tier, redis)
+    await _check_report_rate_limit(auth.key_id, redis)
 
     # ── Anti-spoof: refuse downgrade of high-confidence blocklisted domains ─
-    # A free-tier key cannot flag mailinator.com as "confirmed_legitimate" and
-    # have it apply — such reports go to a manual review queue and do not
-    # update the domain_stats counters.
+    # Reports that try to flag mailinator.com as "confirmed_legitimate" go to
+    # a manual review queue rather than updating domain_stats counters.
     if body.outcome == "confirmed_legitimate" and await _is_high_confidence_disposable(domain, redis):
         logger.warning(
-            "Key %s (%s tier) attempted to downgrade HC-blocklisted domain %s — flagged for review",
-            auth.key_id, auth.tier, domain,
+            "Key %s attempted to downgrade HC-blocklisted domain %s — flagged for review",
+            auth.key_id, domain,
         )
         return ReportResponse(
             accepted=True,
