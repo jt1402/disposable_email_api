@@ -19,11 +19,18 @@ router = APIRouter(prefix="/usage", tags=["usage"])
 
 
 async def _key_ids_for_user(user_id: int) -> list[str]:
+    """
+    All api_key_id values that should count toward this user's usage:
+    the Unkey key ids of their real keys plus the synthetic 'playground:{id}'
+    tag we write for dashboard /playground runs (those drain credits too).
+    """
     async with db.get_session() as s:
         result = await s.execute(
             select(db.ApiKey.unkey_key_id).where(db.ApiKey.user_id == user_id)
         )
-        return [row for row in result.scalars() if row]
+        ids = [row for row in result.scalars() if row]
+    ids.append(f"playground:{user_id}")
+    return ids
 
 
 class UsageSummary(BaseModel):
@@ -48,19 +55,6 @@ async def usage_summary(current: CurrentUser) -> UsageSummary:
     key_ids = await _key_ids_for_user(current.id)
     now = datetime.now(UTC)
     period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    if not key_ids:
-        return UsageSummary(
-            total_checks=0,
-            checks_this_period=0,
-            period_start=period_start.isoformat(),
-            blocks=0,
-            verify_manually=0,
-            allow_with_flag=0,
-            allows=0,
-            avg_latency_ms=0.0,
-            cache_hit_rate=0.0,
-        )
 
     async with db.get_session() as s:
         all_time_stmt = select(func.count()).where(db.Check.api_key_id.in_(key_ids))
@@ -118,9 +112,6 @@ async def usage_by_day(
 ) -> ByDayResponse:
     """Time-series for the usage chart. One row per calendar day (UTC)."""
     key_ids = await _key_ids_for_user(current.id)
-    if not key_ids:
-        return ByDayResponse(days=days, buckets=[])
-
     cutoff = datetime.now(UTC) - timedelta(days=days)
     day_expr = func.date_trunc("day", db.Check.checked_at)
     async with db.get_session() as s:
@@ -170,9 +161,6 @@ async def recent_checks(
 ) -> RecentResponse:
     """Latest N checks across all of the user's keys. Domain only — no emails."""
     key_ids = await _key_ids_for_user(current.id)
-    if not key_ids:
-        return RecentResponse(items=[])
-
     async with db.get_session() as s:
         stmt = (
             select(db.Check)
