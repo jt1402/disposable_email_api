@@ -197,9 +197,7 @@ async def init_db(database_url: str) -> None:
         database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1).replace("postgres://", "postgresql+asyncpg://", 1)
     _engine = create_async_engine(database_url, echo=False, pool_pre_ping=True)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
-
-    async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Schema is owned by Alembic: `alembic upgrade head` runs on container start.
 
 
 async def close_db() -> None:
