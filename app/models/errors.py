@@ -29,7 +29,7 @@ class ErrorEnvelope(BaseModel):
     error: ErrorDetail
 
 
-DOCS_BASE = "https://docs.disposablecheck.com"
+DOCS_BASE = "https://verifymailapi.com/docs"
 
 
 def rate_limit_error(used: int, limit: int, reset_at: str) -> ErrorDetail:
@@ -40,7 +40,7 @@ def rate_limit_error(used: int, limit: int, reset_at: str) -> ErrorDetail:
         reset_at=reset_at,
         used=used,
         limit=limit,
-        upgrade_url="https://disposablecheck.com/pricing",
+        upgrade_url="https://verifymailapi.com/pricing",
         docs_url=f"{DOCS_BASE}/rate-limits",
     )
 
@@ -49,7 +49,7 @@ def invalid_key_error() -> ErrorDetail:
     return ErrorDetail(
         code="invalid_api_key",
         http_status=401,
-        message="API key is missing or invalid. Get a free key at disposablecheck.com",
+        message="API key is missing or invalid. Get a free key at verifymailapi.com",
         docs_url=f"{DOCS_BASE}/authentication",
     )
 
@@ -95,7 +95,7 @@ def quota_exceeded_error() -> ErrorDetail:
         code="quota_exceeded",
         http_status=402,
         message="You are out of checks. Buy a bundle to keep going.",
-        upgrade_url="https://email-api-landing.vercel.app/dashboard/billing",
+        upgrade_url="https://verifymailapi.com/dashboard/billing",
         docs_url=f"{DOCS_BASE}/billing",
     )
 

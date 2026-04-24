@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # Email (Resend) — magic links, verification mails
     resend_api_key: str = ""
-    resend_from_email: str = "VerifyMail <noreply@verifymail.dev>"
+    resend_from_email: str = "VerifyMail <noreply@verifymailapi.com>"
 
     # Auth / session
     # Base URL of the Next.js frontend — magic-link emails embed this.

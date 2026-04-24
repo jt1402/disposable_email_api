@@ -69,11 +69,11 @@ async def _probe_smtp(mx_host: str, domain: str, timeout: float) -> tuple[bool |
                 line = await asyncio.wait_for(reader.readline(), timeout=timeout)
                 return line.decode(errors="replace").strip()
 
-            ehlo_resp = await send("EHLO disposablecheck.com")
+            ehlo_resp = await send("EHLO verifymailapi.com")
             if not ehlo_resp.startswith(("250", "220")):
                 return None, (time.monotonic() - start) * 1000, ehlo_resp[:3]
 
-            mail_resp = await send("MAIL FROM:<probe@disposablecheck.com>")
+            mail_resp = await send("MAIL FROM:<probe@verifymailapi.com>")
             if not mail_resp.startswith("250"):
                 return None, (time.monotonic() - start) * 1000, mail_resp[:3]
 
