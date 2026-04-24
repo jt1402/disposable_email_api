@@ -25,8 +25,9 @@ class Settings(BaseSettings):
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_price_bundle_10k: str = ""
+    stripe_price_bundle_25k: str = ""
     stripe_price_bundle_50k: str = ""
-    stripe_price_bundle_250k: str = ""
+    stripe_price_bundle_100k: str = ""
 
     # Email (Resend) — magic links, verification mails
     resend_api_key: str = ""
@@ -67,21 +68,24 @@ class Settings(BaseSettings):
     free_signup_credits: int = 100
     # Bundle sizes in checks — must match the Stripe price IDs above.
     bundle_checks_10k: int = 10_000
+    bundle_checks_25k: int = 25_000
     bundle_checks_50k: int = 50_000
-    bundle_checks_250k: int = 250_000
+    bundle_checks_100k: int = 100_000
 
     def bundle_credits(self, bundle: str) -> int:
         return {
             "10k": self.bundle_checks_10k,
+            "25k": self.bundle_checks_25k,
             "50k": self.bundle_checks_50k,
-            "250k": self.bundle_checks_250k,
+            "100k": self.bundle_checks_100k,
         }.get(bundle, 0)
 
     def bundle_price_id(self, bundle: str) -> str:
         return {
             "10k": self.stripe_price_bundle_10k,
+            "25k": self.stripe_price_bundle_25k,
             "50k": self.stripe_price_bundle_50k,
-            "250k": self.stripe_price_bundle_250k,
+            "100k": self.stripe_price_bundle_100k,
         }.get(bundle, "")
 
 

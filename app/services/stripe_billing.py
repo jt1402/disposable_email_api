@@ -40,8 +40,9 @@ def _bundle_from_price(price_id: str) -> str:
     settings = get_settings()
     return {
         settings.stripe_price_bundle_10k: "10k",
+        settings.stripe_price_bundle_25k: "25k",
         settings.stripe_price_bundle_50k: "50k",
-        settings.stripe_price_bundle_250k: "250k",
+        settings.stripe_price_bundle_100k: "100k",
     }.get(price_id, "")
 
 
