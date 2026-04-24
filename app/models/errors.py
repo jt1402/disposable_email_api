@@ -90,6 +90,16 @@ def invalid_magic_link_error() -> ErrorDetail:
     )
 
 
+def quota_exceeded_error() -> ErrorDetail:
+    return ErrorDetail(
+        code="quota_exceeded",
+        http_status=402,
+        message="You are out of checks. Buy a bundle to keep going.",
+        upgrade_url="https://email-api-landing.vercel.app/dashboard/billing",
+        docs_url=f"{DOCS_BASE}/billing",
+    )
+
+
 def email_send_failed_error() -> ErrorDetail:
     return ErrorDetail(
         code="email_send_failed",

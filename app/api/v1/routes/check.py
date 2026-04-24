@@ -17,7 +17,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from app.api.v1.deps import require_api_key
 from app.detection import engine
 from app.models.check import CheckRequest, CheckResponse
-from app.models.errors import invalid_email_param_error
+from app.models.errors import invalid_email_param_error, quota_exceeded_error
+from app.services import credits
 from app.services.redis_client import get_redis
 from app.services.unkey import VerifyResult
 
@@ -37,6 +38,20 @@ def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "") or ""
 
 
+async def _charge_or_402(auth: VerifyResult) -> None:
+    """
+    Deduct one credit from the key owner's balance, or raise 402.
+    Dev-mode keys (owner_id='dev') and enterprise keys (unlimited) skip charging.
+    """
+    if auth.owner_id == "dev" or auth.tier == "enterprise":
+        return
+    if not auth.owner_id.isdigit():
+        return  # unknown owner shape; let the request through rather than falsely 402
+    charged, _ = await credits.try_charge(int(auth.owner_id))
+    if not charged:
+        raise HTTPException(status_code=402, detail=quota_exceeded_error().model_dump())
+
+
 @router.get("/check", response_model=CheckResponse, summary="Check an email address")
 async def check_get(
     request: Request,
@@ -47,6 +62,7 @@ async def check_get(
     if not email:
         raise HTTPException(status_code=422, detail=invalid_email_param_error().model_dump())
 
+    await _charge_or_402(auth)
     redis = get_redis()
     return await engine.check(
         email, redis,
@@ -64,6 +80,7 @@ async def check_post(
     x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
     auth: VerifyResult = Depends(require_api_key),
 ) -> CheckResponse:
+    await _charge_or_402(auth)
     redis = get_redis()
     return await engine.check(
         body.email, redis,

@@ -77,7 +77,11 @@ async def get_or_create_user(email: str) -> UserDTO:
         result = await s.execute(select(db.User).where(db.User.email == email))
         user = result.scalar_one_or_none()
         if user is None:
-            user = db.User(email=email)
+            from app.core.config import get_settings
+            user = db.User(
+                email=email,
+                credit_balance_checks=get_settings().free_signup_credits,
+            )
             s.add(user)
             await s.commit()
             await s.refresh(user)

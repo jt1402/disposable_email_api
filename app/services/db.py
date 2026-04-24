@@ -46,6 +46,10 @@ class User(Base):
     stripe_customer_id: Mapped[str | None] = mapped_column(
         String(64), unique=True, nullable=True, index=True
     )
+    # Pre-paid checks remaining. Decremented on every successful /v1/check;
+    # topped up by bundle purchases via the Stripe webhook. New signups get a
+    # bootstrap grant of settings.free_signup_credits (default 100).
+    credit_balance_checks: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

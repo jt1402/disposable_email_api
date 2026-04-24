@@ -1,40 +1,66 @@
 """
-Stripe billing integration.
+Stripe billing integration — credit bundles (PAYG + top-ups).
 
-Handles subscription webhooks to provision/revoke Unkey API keys automatically.
-Flow: checkout.session.completed → upsert User by email → provision Unkey key
-      customer.subscription.deleted → revoke Unkey keys for that user
+Model: every /v1/check decrements User.credit_balance_checks. When a user
+runs low, they buy a bundle (10k / 50k / 250k) via Stripe Checkout. The
+`checkout.session.completed` webhook adds the bundle's credits to the user's
+balance. No subscriptions — each purchase is a one-time `mode: "payment"`
+Checkout Session.
+
+Idempotency is handled via Stripe's event id: we record the event id in a
+Redis set with a 30-day TTL so a replayed webhook never double-credits.
 """
 
 import logging
-from datetime import UTC, datetime
 
 import stripe
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.services import db, unkey
+from app.services import db
+from app.services.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
+_IDEMPOTENCY_KEY_PREFIX = "stripe:event:"
+_IDEMPOTENCY_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
 
-def _price_to_tier(price_id: str) -> str:
+
+async def _already_processed(event_id: str) -> bool:
+    """Use Redis SETNX for webhook idempotency. Returns True if already seen."""
+    if not event_id:
+        return False
+    redis = get_redis()
+    key = f"{_IDEMPOTENCY_KEY_PREFIX}{event_id}"
+    # set if not exists; returns True on first write, False on duplicate
+    was_new = await redis.set(key, "1", ex=_IDEMPOTENCY_TTL_SECONDS, nx=True)
+    return not bool(was_new)
+
+
+def _bundle_from_price(price_id: str) -> str:
     settings = get_settings()
     return {
-        settings.stripe_price_starter: "starter",
-        settings.stripe_price_growth: "growth",
-        settings.stripe_price_pro: "pro",
-    }.get(price_id, "free")
+        settings.stripe_price_bundle_10k: "10k",
+        settings.stripe_price_bundle_50k: "50k",
+        settings.stripe_price_bundle_250k: "250k",
+    }.get(price_id, "")
 
 
-async def handle_checkout_completed(session: dict) -> None:
+async def handle_checkout_completed(session: dict, event_id: str = "") -> None:
     """
-    New or reactivated paid subscription. Idempotent: if the user already has
-    an active key on this tier we skip reprovisioning.
+    Bundle purchase completed. Add the bundle's credits to the user's balance.
+    Idempotent via Stripe event id so replayed webhooks don't double-credit.
     """
+    if await _already_processed(event_id):
+        logger.info("Stripe event %s already processed, skipping", event_id)
+        return
+
     settings = get_settings()
     customer_email = ((session.get("customer_details") or {}).get("email") or "").strip().lower()
     stripe_customer_id = session.get("customer", "")
+    client_reference_id = session.get("client_reference_id") or ""
+    metadata = session.get("metadata") or {}
+    bundle = metadata.get("bundle", "")
     price_id = ""
 
     try:
@@ -45,75 +71,40 @@ async def handle_checkout_completed(session: dict) -> None:
     except Exception as exc:
         logger.error("Failed to fetch line items: %s", exc)
 
-    tier = _price_to_tier(price_id)
-    monthly_limit = settings.tier_limit(tier)
+    # Prefer the explicit metadata.bundle we set at checkout-creation time;
+    # fall back to mapping the price id so legacy sessions still resolve.
+    if not bundle:
+        bundle = _bundle_from_price(price_id)
 
-    if not customer_email:
-        logger.error("checkout.session.completed without customer email; cannot link to user")
+    credits = settings.bundle_credits(bundle)
+    if credits <= 0:
+        logger.error(
+            "checkout.session.completed with unknown bundle (price=%s, metadata.bundle=%s)",
+            price_id, bundle,
+        )
         return
 
     async with db.get_session() as s:
-        # Upsert user by email. Paid checkout without a prior signup is allowed:
-        # the email from Stripe becomes the user's email; first magic-link login
-        # afterward will mark it verified.
-        result = await s.execute(select(db.User).where(db.User.email == customer_email))
-        user = result.scalar_one_or_none()
+        user = None
+        # Prefer client_reference_id (the user.id we set at checkout-creation).
+        if client_reference_id and client_reference_id.isdigit():
+            user = await s.get(db.User, int(client_reference_id))
+        if user is None and customer_email:
+            result = await s.execute(select(db.User).where(db.User.email == customer_email))
+            user = result.scalar_one_or_none()
         if user is None:
-            user = db.User(email=customer_email, stripe_customer_id=stripe_customer_id)
-            s.add(user)
-            await s.flush()
-        elif not user.stripe_customer_id:
+            logger.error(
+                "checkout.session.completed without resolvable user (email=%s, ref=%s)",
+                customer_email, client_reference_id,
+            )
+            return
+
+        if stripe_customer_id and not user.stripe_customer_id:
             user.stripe_customer_id = stripe_customer_id
-
-        key_result = await unkey.create_key(
-            owner_id=str(user.id),
-            tier=tier,
-            monthly_limit=monthly_limit,
-            name=f"{tier} — {customer_email}",
-        )
-        if key_result.error:
-            logger.error("Failed to create Unkey key for user %s: %s", user.id, key_result.error)
-            await s.commit()
-            return
-
-        s.add(
-            db.ApiKey(
-                user_id=user.id,
-                unkey_key_id=key_result.key_id,
-                unkey_key_prefix=(key_result.key or "")[:8],
-                name=f"{tier.capitalize()} plan",
-                tier=tier,
-            )
-        )
+        user.credit_balance_checks = (user.credit_balance_checks or 0) + credits
         await s.commit()
 
-    logger.info("Provisioned %s key for user %s", tier, customer_email)
-
-
-async def handle_subscription_deleted(subscription: dict) -> None:
-    """Revoke all active keys for the subscription's customer."""
-    stripe_customer_id = subscription.get("customer", "")
-    if not stripe_customer_id:
-        return
-
-    async with db.get_session() as s:
-        result = await s.execute(
-            select(db.User).where(db.User.stripe_customer_id == stripe_customer_id)
-        )
-        user = result.scalar_one_or_none()
-        if not user:
-            return
-
-        keys_result = await s.execute(
-            select(db.ApiKey).where(
-                db.ApiKey.user_id == user.id,
-                db.ApiKey.revoked_at.is_(None),
-            )
-        )
-        for key in keys_result.scalars():
-            await unkey.revoke_key(key.unkey_key_id)
-            key.revoked_at = datetime.now(UTC)
-
-        await s.commit()
-
-    logger.info("Revoked keys for stripe_customer %s", stripe_customer_id)
+    logger.info(
+        "Credited %d checks (bundle=%s) to user %s (email=%s)",
+        credits, bundle, user.id, customer_email,
+    )

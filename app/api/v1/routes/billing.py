@@ -1,10 +1,12 @@
 """
-Billing routes — Stripe checkout initiation.
+Billing routes — Stripe checkout for credit bundles + account balance.
 
-The dashboard's "Upgrade" button calls POST /v1/billing/checkout with the tier
-name; we create a Stripe Checkout Session and return its URL. The resulting
-webhook (see routes/webhooks.py) upserts the User's stripe_customer_id and
-provisions the paid-tier Unkey key.
+POST /v1/billing/checkout   create a Stripe Checkout Session for a bundle
+GET  /v1/billing/balance    current credit balance for the logged-in user
+
+Model: one-time bundle purchases (mode: "payment"). Every successful
+/v1/check decrements User.credit_balance_checks by 1. When the balance
+runs out, /v1/check returns 402 and the user buys a bundle.
 """
 
 import logging
@@ -16,6 +18,7 @@ from pydantic import BaseModel, Field
 from app.api.v1.deps import CurrentUser
 from app.core.config import get_settings
 from app.models.errors import ErrorDetail
+from app.services import db
 
 logger = logging.getLogger(__name__)
 
@@ -23,20 +26,23 @@ router = APIRouter(prefix="/billing", tags=["billing"])
 
 
 class CheckoutBody(BaseModel):
-    tier: str = Field(description="starter | growth | pro")
+    bundle: str = Field(description="10k | 50k | 250k")
 
 
 class CheckoutResponse(BaseModel):
     url: str
 
 
-def _price_for(tier: str) -> str:
-    settings = get_settings()
-    return {
-        "starter": settings.stripe_price_starter,
-        "growth": settings.stripe_price_growth,
-        "pro": settings.stripe_price_pro,
-    }.get(tier, "")
+class BalanceResponse(BaseModel):
+    credit_balance_checks: int
+
+
+@router.get("/balance", response_model=BalanceResponse)
+async def get_balance(current: CurrentUser) -> BalanceResponse:
+    async with db.get_session() as s:
+        user = await s.get(db.User, current.id)
+        balance = int(user.credit_balance_checks) if user else 0
+    return BalanceResponse(credit_balance_checks=balance)
 
 
 @router.post("/checkout", response_model=CheckoutResponse)
@@ -51,28 +57,39 @@ async def create_checkout(body: CheckoutBody, current: CurrentUser) -> CheckoutR
                 message="Billing is not configured in this environment.",
             ).model_dump(),
         )
-    price = _price_for(body.tier)
-    if not price:
+    price = settings.bundle_price_id(body.bundle)
+    credits = settings.bundle_credits(body.bundle)
+    if not price or credits <= 0:
         raise HTTPException(
             status_code=422,
             detail=ErrorDetail(
-                code="invalid_tier",
+                code="invalid_bundle",
                 http_status=422,
-                message=f"Unknown tier '{body.tier}'. Use starter, growth, or pro.",
+                message=f"Unknown bundle '{body.bundle}'. Use 10k, 50k, or 250k.",
             ).model_dump(),
         )
 
+    # Reuse an existing Stripe customer if we have one so all invoices land
+    # on the same account; first-time purchasers checkout as customer_email.
+    async with db.get_session() as s:
+        user = await s.get(db.User, current.id)
+        stripe_customer_id = user.stripe_customer_id if user else None
+
     stripe.api_key = settings.stripe_secret_key
     try:
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            line_items=[{"price": price, "quantity": 1}],
-            customer_email=current.email,
-            success_url=f"{settings.app_base_url.rstrip('/')}/dashboard?checkout=success",
-            cancel_url=f"{settings.app_base_url.rstrip('/')}/pricing?checkout=cancelled",
-            client_reference_id=str(current.id),
-            metadata={"user_id": str(current.id), "tier": body.tier},
-        )
+        session_kwargs: dict = {
+            "mode": "payment",
+            "line_items": [{"price": price, "quantity": 1}],
+            "success_url": f"{settings.app_base_url.rstrip('/')}/dashboard/billing?checkout=success",
+            "cancel_url": f"{settings.app_base_url.rstrip('/')}/dashboard/billing?checkout=cancelled",
+            "client_reference_id": str(current.id),
+            "metadata": {"user_id": str(current.id), "bundle": body.bundle},
+        }
+        if stripe_customer_id:
+            session_kwargs["customer"] = stripe_customer_id
+        else:
+            session_kwargs["customer_email"] = current.email
+        session = stripe.checkout.Session.create(**session_kwargs)
     except stripe.StripeError as exc:
         logger.error("Stripe checkout.create failed for user %s: %s", current.id, exc)
         raise HTTPException(

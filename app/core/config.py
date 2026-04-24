@@ -21,12 +21,12 @@ class Settings(BaseSettings):
     unkey_root_key: str = ""
     unkey_api_id: str = ""
 
-    # Stripe
+    # Stripe — credit bundles (one-time purchases, mode=payment)
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
-    stripe_price_starter: str = ""
-    stripe_price_growth: str = ""
-    stripe_price_pro: str = ""
+    stripe_price_bundle_10k: str = ""
+    stripe_price_bundle_50k: str = ""
+    stripe_price_bundle_250k: str = ""
 
     # Email (Resend) — magic links, verification mails
     resend_api_key: str = ""
@@ -62,21 +62,27 @@ class Settings(BaseSettings):
     model_version: str = "1.0.0"
     default_risk_profile: str = "balanced"  # strict | balanced | permissive
 
-    # Monthly request limits per tier (-1 = unlimited)
-    tier_limit_free: int = 500
-    tier_limit_starter: int = 10_000
-    tier_limit_growth: int = 50_000
-    tier_limit_pro: int = 250_000
-    tier_limit_enterprise: int = -1
+    # PAYG credit model — credits live on User.credit_balance_checks.
+    # Every successful /v1/check decrements by 1.
+    free_signup_credits: int = 100
+    # Bundle sizes in checks — must match the Stripe price IDs above.
+    bundle_checks_10k: int = 10_000
+    bundle_checks_50k: int = 50_000
+    bundle_checks_250k: int = 250_000
 
-    def tier_limit(self, tier: str) -> int:
+    def bundle_credits(self, bundle: str) -> int:
         return {
-            "free": self.tier_limit_free,
-            "starter": self.tier_limit_starter,
-            "growth": self.tier_limit_growth,
-            "pro": self.tier_limit_pro,
-            "enterprise": self.tier_limit_enterprise,
-        }.get(tier, self.tier_limit_free)
+            "10k": self.bundle_checks_10k,
+            "50k": self.bundle_checks_50k,
+            "250k": self.bundle_checks_250k,
+        }.get(bundle, 0)
+
+    def bundle_price_id(self, bundle: str) -> str:
+        return {
+            "10k": self.stripe_price_bundle_10k,
+            "50k": self.stripe_price_bundle_50k,
+            "250k": self.stripe_price_bundle_250k,
+        }.get(bundle, "")
 
 
 @lru_cache

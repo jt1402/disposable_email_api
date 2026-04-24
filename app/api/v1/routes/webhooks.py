@@ -12,7 +12,7 @@ import stripe
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.core.config import get_settings
-from app.services.stripe_billing import handle_checkout_completed, handle_subscription_deleted
+from app.services.stripe_billing import handle_checkout_completed
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +62,8 @@ async def stripe_webhook(
 
     logger.info("Stripe webhook: %s", event_type)
 
+    event_id = payload_dict.get("id", "")
     if event_type == "checkout.session.completed":
-        await handle_checkout_completed(event_data)
-    elif event_type in ("customer.subscription.deleted", "customer.subscription.paused"):
-        await handle_subscription_deleted(event_data)
+        await handle_checkout_completed(event_data, event_id=event_id)
 
     return {"received": True}
