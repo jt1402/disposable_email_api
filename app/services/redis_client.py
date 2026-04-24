@@ -29,6 +29,11 @@ class RedisClient:
     async def setex(self, key: str, ttl: int, value: str) -> None:
         await self._client.setex(key, ttl, value)
 
+    async def set_nx_ex(self, key: str, value: str, ttl: int) -> bool:
+        """Atomic SET NX EX — returns True if the key was written, False if it already existed."""
+        result = await self._client.set(key, value, ex=ttl, nx=True)
+        return bool(result)
+
     async def delete(self, key: str) -> None:
         await self._client.delete(key)
 

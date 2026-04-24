@@ -32,9 +32,8 @@ async def _already_processed(event_id: str) -> bool:
         return False
     redis = get_redis()
     key = f"{_IDEMPOTENCY_KEY_PREFIX}{event_id}"
-    # set if not exists; returns True on first write, False on duplicate
-    was_new = await redis.set(key, "1", ex=_IDEMPOTENCY_TTL_SECONDS, nx=True)
-    return not bool(was_new)
+    was_new = await redis.set_nx_ex(key, "1", _IDEMPOTENCY_TTL_SECONDS)
+    return not was_new
 
 
 def _bundle_from_price(price_id: str) -> str:
