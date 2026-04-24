@@ -166,10 +166,12 @@ async def verify(body: VerifyRequest, request: Request) -> VerifyResponse:
         raise HTTPException(status_code=400, detail=invalid_magic_link_error().model_dump())
     user, purpose = consumed
 
-    # Signup flow: mark email verified AND auto-provision a default API key
-    # so the user lands in the dashboard with the "100 free checks" promise
-    # already fulfilled — zero extra clicks to first value.
-    if purpose == "signup_verify" and user.email_verified_at is None:
+    # First-verification bootstrap: mark email verified AND auto-provision a
+    # default API key. We trigger this whenever email_verified_at is still null
+    # — not just on purpose=='signup_verify' — because /login on a fresh email
+    # silently creates the user (anti-enumeration), and those users otherwise
+    # never reach the key-provisioning path.
+    if user.email_verified_at is None:
         await auth.mark_email_verified(user.id)
         refreshed = await auth.get_user_by_id(user.id)
         if refreshed is not None:
