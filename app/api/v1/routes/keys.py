@@ -10,14 +10,19 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 
 from app.api.v1.deps import CurrentUser
 from app.models.errors import ErrorDetail
-from app.services import keys as keys_svc
+from app.services import db, keys as keys_svc
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/keys", tags=["keys"])
+
+# Unpaid accounts are capped at 1 active key. The cap lifts the moment a
+# bundle purchase is recorded via the Stripe webhook (sets stripe_customer_id).
+_FREE_KEY_LIMIT = 1
 
 
 class CreateKeyBody(BaseModel):
@@ -59,6 +64,32 @@ async def list_keys(current: CurrentUser) -> list[KeySummary]:
 
 @router.post("", response_model=CreatedKeyResponse, status_code=201)
 async def create_key(body: CreateKeyBody, current: CurrentUser) -> CreatedKeyResponse:
+    async with db.get_session() as s:
+        user = await s.get(db.User, current.id)
+        has_purchased = bool(user and user.stripe_customer_id)
+        if not has_purchased:
+            active_count = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(db.ApiKey)
+                    .where(db.ApiKey.user_id == current.id)
+                    .where(db.ApiKey.revoked_at.is_(None))
+                )
+            ).scalar_one() or 0
+            if active_count >= _FREE_KEY_LIMIT:
+                raise HTTPException(
+                    status_code=403,
+                    detail=ErrorDetail(
+                        code="free_key_limit_reached",
+                        http_status=403,
+                        message=(
+                            "Free accounts are limited to one API key. "
+                            "Buy a credit bundle to unlock additional keys."
+                        ),
+                        upgrade_url="/dashboard/billing",
+                    ).model_dump(),
+                )
+
     created = await keys_svc.create_for_user(user_id=current.id, name=body.name)
     if created is None:
         raise HTTPException(

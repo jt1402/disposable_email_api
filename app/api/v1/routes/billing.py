@@ -35,6 +35,7 @@ class CheckoutResponse(BaseModel):
 
 class BalanceResponse(BaseModel):
     credit_balance_checks: int
+    has_purchased: bool
 
 
 @router.get("/balance", response_model=BalanceResponse)
@@ -42,7 +43,11 @@ async def get_balance(current: CurrentUser) -> BalanceResponse:
     async with db.get_session() as s:
         user = await s.get(db.User, current.id)
         balance = int(user.credit_balance_checks) if user else 0
-    return BalanceResponse(credit_balance_checks=balance)
+        has_purchased = bool(user and user.stripe_customer_id)
+    return BalanceResponse(
+        credit_balance_checks=balance,
+        has_purchased=has_purchased,
+    )
 
 
 @router.post("/checkout", response_model=CheckoutResponse)
