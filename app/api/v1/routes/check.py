@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
-from app.api.v1.deps import require_api_key
+from app.api.v1.deps import CurrentUser, require_api_key
 from app.detection import engine
 from app.models.check import CheckRequest, CheckResponse
 from app.models.errors import invalid_email_param_error, quota_exceeded_error
@@ -85,5 +85,35 @@ async def check_post(
         body.email, redis,
         api_key_id=auth.key_id,
         risk_profile_header=_profile_override(x_risk_profile, auth),
+        request_id=_request_id(request),
+    )
+
+
+@router.post(
+    "/check/preview",
+    response_model=CheckResponse,
+    include_in_schema=False,
+    summary="Dashboard playground — session-authed, no API key required",
+)
+async def check_preview(
+    request: Request,
+    body: CheckRequest,
+    current: CurrentUser,
+    x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
+) -> CheckResponse:
+    """
+    Dashboard-only variant of /v1/check. Authenticated via the session bearer
+    rather than X-API-Key, and charges the user's credit balance directly.
+    Results are tagged api_key_id='playground:{user_id}' so they never land in
+    the customer-facing usage aggregates.
+    """
+    charged, _ = await credits.try_charge(current.id)
+    if not charged:
+        raise HTTPException(status_code=402, detail=quota_exceeded_error().model_dump())
+    redis = get_redis()
+    return await engine.check(
+        body.email, redis,
+        api_key_id=f"playground:{current.id}",
+        risk_profile_header=x_risk_profile,
         request_id=_request_id(request),
     )
