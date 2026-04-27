@@ -64,6 +64,11 @@ class VerifyResponse(BaseModel):
     session_token: str
     expires_at: str
     user: UserResponse
+    # Raw secret of the auto-provisioned default API key. Populated only on
+    # the first-verification bootstrap (i.e. once per account, ever). The
+    # frontend stashes it in sessionStorage and shows it on the dashboard
+    # exactly once before discarding — same show-once contract as keys.create.
+    default_api_key: str | None = None
 
 
 class AckResponse(BaseModel):
@@ -171,13 +176,16 @@ async def verify(body: VerifyRequest, request: Request) -> VerifyResponse:
     # — not just on purpose=='signup_verify' — because /login on a fresh email
     # silently creates the user (anti-enumeration), and those users otherwise
     # never reach the key-provisioning path.
+    default_api_key: str | None = None
     if user.email_verified_at is None:
         await auth.mark_email_verified(user.id)
         refreshed = await auth.get_user_by_id(user.id)
         if refreshed is not None:
             user = refreshed
         try:
-            await keys_svc.create_for_user(user.id, name="Default key")
+            created = await keys_svc.create_for_user(user.id, name="Default key")
+            if created is not None:
+                default_api_key = created.key
         except Exception as exc:  # noqa: BLE001 — never block signup on key provisioning
             logger.error("Failed to auto-provision key for user %s: %s", user.id, exc)
 
@@ -190,6 +198,7 @@ async def verify(body: VerifyRequest, request: Request) -> VerifyResponse:
         session_token=session.token,
         expires_at=session.expires_at.isoformat(),
         user=_user_payload(user),
+        default_api_key=default_api_key,
     )
 
 
