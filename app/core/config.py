@@ -33,6 +33,17 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     resend_from_email: str = "VerifyMail <noreply@verifymailapi.com>"
 
+    # OAuth — leave empty to disable a provider. Redirect URIs registered with
+    # the provider must point at /v1/auth/oauth/{provider}/callback on the
+    # public backend URL (e.g. https://api.verifymailapi.com/...).
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    # Public origin of *this* API service. Used to build the OAuth redirect_uri
+    # the provider will hit. Defaults to the Railway URL; override in prod.
+    backend_public_url: str = "https://api.verifymailapi.com"
+
     # Auth / session
     # Base URL of the Next.js frontend — magic-link emails embed this.
     app_base_url: str = "http://localhost:3000"
