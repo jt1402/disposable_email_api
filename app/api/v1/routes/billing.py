@@ -26,7 +26,7 @@ router = APIRouter(prefix="/billing", tags=["billing"])
 
 
 class CheckoutBody(BaseModel):
-    bundle: str = Field(description="10k | 50k | 250k")
+    bundle: str = Field(description="5k | 10k | 25k | 50k | 100k")
 
 
 class CheckoutResponse(BaseModel):
@@ -70,7 +70,7 @@ async def create_checkout(body: CheckoutBody, current: CurrentUser) -> CheckoutR
             detail=ErrorDetail(
                 code="invalid_bundle",
                 http_status=422,
-                message=f"Unknown bundle '{body.bundle}'. Use 10k, 50k, or 250k.",
+                message=f"Unknown bundle '{body.bundle}'. Use 5k, 10k, 25k, 50k, or 100k.",
             ).model_dump(),
         )
 

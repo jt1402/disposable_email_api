@@ -2,7 +2,7 @@
 Stripe billing integration — credit bundles (PAYG + top-ups).
 
 Model: every /v1/check decrements User.credit_balance_checks. When a user
-runs low, they buy a bundle (10k / 50k / 250k) via Stripe Checkout. The
+runs low, they buy a bundle (5k / 10k / 25k / 50k / 100k) via Stripe Checkout. The
 `checkout.session.completed` webhook adds the bundle's credits to the user's
 balance. No subscriptions — each purchase is a one-time `mode: "payment"`
 Checkout Session.
@@ -39,6 +39,7 @@ async def _already_processed(event_id: str) -> bool:
 def _bundle_from_price(price_id: str) -> str:
     settings = get_settings()
     return {
+        settings.stripe_price_bundle_5k: "5k",
         settings.stripe_price_bundle_10k: "10k",
         settings.stripe_price_bundle_25k: "25k",
         settings.stripe_price_bundle_50k: "50k",
