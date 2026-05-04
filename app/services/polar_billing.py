@@ -143,9 +143,10 @@ async def create_checkout(
 
 async def get_subscription(subscription_id: str) -> dict:
     """
-    Fetch a Polar subscription. Used to read current-period meter usage
-    (consumed_units / amount / period boundaries) for the in-dashboard
-    "Usage this period" display.
+    Fetch a Polar subscription. Used to read current-period boundaries
+    (current_period_start / end) for the in-dashboard "Usage this period"
+    display. Note: the embedded `meters[]` field lags realtime — pull
+    consumed_units from list_customer_meters() instead.
     """
     async with _client() as c:
         resp = await c.get(f"/v1/subscriptions/{subscription_id}")
@@ -156,6 +157,26 @@ async def get_subscription(subscription_id: str) -> dict:
             )
             resp.raise_for_status()
         return resp.json()
+
+
+async def list_customer_meters(customer_id: str) -> list[dict]:
+    """
+    Realtime per-customer meter state from /v1/customer-meters. This is
+    the same data the Polar dashboard's Customer → Usage tab renders, so
+    it stays in sync with what users see in our app vs. theirs.
+    """
+    async with _client() as c:
+        resp = await c.get(
+            "/v1/customer-meters",
+            params={"customer_id": customer_id, "limit": 50},
+        )
+        if resp.status_code >= 400:
+            logger.error(
+                "Polar customer-meters fetch failed (cust=%s): %s %s",
+                customer_id, resp.status_code, resp.text,
+            )
+            resp.raise_for_status()
+        return (resp.json() or {}).get("items") or []
 
 
 async def cancel_subscription(subscription_id: str) -> None:

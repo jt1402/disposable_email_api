@@ -12,6 +12,7 @@ billing_mode column gates which path runs. Switching to metered happens via the
 """
 
 import logging
+import math
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -24,6 +25,11 @@ from app.services import db, polar_billing
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/billing", tags=["billing"])
+
+# Metered unit price in cents. Mirrors the Polar product's per-unit price
+# ($0.003 / check). If we ever change pricing, update both this constant
+# and the price configured on the Polar metered product.
+_METERED_PRICE_CENTS = 0.3
 
 
 class CheckoutBody(BaseModel):
@@ -124,38 +130,58 @@ async def create_checkout(body: CheckoutBody, current: CurrentUser) -> CheckoutR
 @router.get("/usage", response_model=UsageResponse)
 async def get_usage(current: CurrentUser) -> UsageResponse:
     """
-    Current-period metered usage for the dashboard. Returns available=false
-    for non-metered users (the UI then hides the panel). Failures degrade
-    to available=false rather than 5xx so a Polar outage doesn't break
-    the billing page for everyone.
+    Current-period metered usage for the dashboard.
+
+    Period boundaries come from the subscription, but actual consumption
+    comes from /v1/customer-meters — the subscription's embedded meters
+    array lags behind realtime events by hours, while customer-meters
+    matches Polar's own dashboard within seconds.
+
+    Returns available=false for non-metered users (UI then hides the
+    panel). Failures degrade to available=false rather than 5xx so a
+    Polar outage doesn't break the billing page for everyone.
     """
     settings = get_settings()
     async with db.get_session() as s:
         user = await s.get(db.User, current.id)
         sub_id = user.polar_subscription_id if user else None
+        cust_id = user.polar_customer_id if user else None
         mode = (user.billing_mode if user else "bundles") or "bundles"
 
-    if mode != "metered" or not sub_id or not settings.polar_access_token:
+    if mode != "metered" or not settings.polar_access_token:
         return UsageResponse(available=False)
 
-    try:
-        sub = await polar_billing.get_subscription(sub_id)
-    except Exception as exc:
-        logger.error("Polar usage fetch failed for user %s: %s", current.id, exc)
-        return UsageResponse(available=False)
+    period_start: str | None = None
+    period_end: str | None = None
+    if sub_id:
+        try:
+            sub = await polar_billing.get_subscription(sub_id)
+            period_start = sub.get("current_period_start")
+            period_end = sub.get("current_period_end")
+        except Exception as exc:
+            logger.error("Polar subscription fetch failed for user %s: %s", current.id, exc)
 
     events = 0
-    amount_cents = 0
-    for m in sub.get("meters") or []:
-        events += int(m.get("consumed_units") or 0)
-        amount_cents += int(m.get("amount") or 0)
+    if cust_id:
+        try:
+            meters = await polar_billing.list_customer_meters(cust_id)
+            # Our org has a single meter (API_checks); summing is safe.
+            # If we ever add a second meter, filter by meter.event_name
+            # here to avoid mixing them.
+            for m in meters:
+                events += int(m.get("consumed_units") or 0)
+        except Exception as exc:
+            logger.error("Polar customer-meters fetch failed for user %s: %s", current.id, exc)
+
+    # Polar rounds up to whole cents for display ($0.009 → $0.01).
+    amount_cents = math.ceil(events * _METERED_PRICE_CENTS) if events else 0
 
     return UsageResponse(
         available=True,
         events=events,
         amount_cents=amount_cents,
-        period_start=sub.get("current_period_start"),
-        period_end=sub.get("current_period_end"),
+        period_start=period_start,
+        period_end=period_end,
     )
 
 
