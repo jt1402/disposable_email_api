@@ -54,6 +54,7 @@ async def try_charge(user_id: int) -> tuple[bool, int]:
     async with db.get_session() as s:
         user = await s.get(db.User, user_id)
         mode = (user.billing_mode if user else "bundles") or "bundles"
+        polar_customer_id = user.polar_customer_id if user else None
 
     if mode == "metered":
         # Burn-down: spend any remaining bundle credits first so the user
@@ -66,11 +67,15 @@ async def try_charge(user_id: int) -> tuple[bool, int]:
         # Out of pre-paid credits — emit the metered event. Fire-and-forget
         # so a Polar outage doesn't fail otherwise-valid requests; worst
         # case we under-bill (the user already paid for the subscription).
+        # Prefer Polar's customer_id (UUID) when we have it, so historical
+        # customers — whose external_id couldn't be backfilled (Polar makes
+        # it immutable) — still attribute correctly.
         try:
             settings = get_settings()
             await polar_billing.ingest_event(
                 name=settings.polar_meter_event_name,
-                external_customer_id=user_id,
+                customer_id=polar_customer_id,
+                external_customer_id=None if polar_customer_id else user_id,
             )
         except Exception as exc:
             logger.error("Polar event ingest failed for user %s: %s", user_id, exc)

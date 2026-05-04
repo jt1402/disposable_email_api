@@ -182,32 +182,40 @@ async def cancel_subscription(subscription_id: str) -> None:
 async def ingest_event(
     *,
     name: str,
-    external_customer_id: str | int,
+    customer_id: str | None = None,
+    external_customer_id: str | int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
     """
-    Report one usage event to Polar. The metered "API_checks" meter
-    aggregates events whose `name` matches its filter (default: api_check).
+    Report one usage event to Polar.
 
-    `external_customer_id` is the customer's identifier in *our* system —
-    we pass our user.id as a string so events get attributed even before
-    Polar's `customer.created` webhook lands.
+    Per Polar's events ingest schema, each event identifies the customer
+    by EITHER `customer_id` (Polar's UUID) OR `external_customer_id` (our
+    own ID, resolved via Customer.external_id). The two are mutually
+    exclusive on a single event.
+
+    We prefer `customer_id`: customers created before we started stamping
+    external_customer_id at checkout (or any account that purchased a
+    bundle before that fix) have a NULL external_id on their Polar
+    record, and Polar's external_id is immutable after creation. Sending
+    customer_id directly bypasses the resolution problem entirely.
     """
-    payload = {
-        "events": [
-            {
-                "name": name,
-                "external_customer_id": str(external_customer_id),
-                "metadata": metadata or {},
-            }
-        ]
-    }
+    if not customer_id and external_customer_id is None:
+        raise ValueError("ingest_event requires customer_id or external_customer_id")
+
+    event: dict[str, Any] = {"name": name, "metadata": metadata or {}}
+    if customer_id:
+        event["customer_id"] = customer_id
+    else:
+        event["external_customer_id"] = str(external_customer_id)
+
+    payload = {"events": [event]}
     async with _client() as c:
         resp = await c.post("/v1/events/ingest", json=payload)
         if resp.status_code >= 400:
             logger.error(
-                "Polar event ingest failed (uid=%s): %s %s",
-                external_customer_id, resp.status_code, resp.text,
+                "Polar event ingest failed (cust=%s ext=%s): %s %s",
+                customer_id, external_customer_id, resp.status_code, resp.text,
             )
             resp.raise_for_status()
 
