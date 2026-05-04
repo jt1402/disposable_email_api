@@ -167,7 +167,7 @@ async def list_customer_meters(customer_id: str) -> list[dict]:
     """
     async with _client() as c:
         resp = await c.get(
-            "/v1/customer-meters",
+            "/v1/customer-meters/",
             params={"customer_id": customer_id, "limit": 50},
         )
         if resp.status_code >= 400:
