@@ -67,7 +67,15 @@ def verify_webhook(body: bytes, headers: Mapping[str, str], secret: str) -> dict
     if not msg_id or not ts or not sig_header:
         raise WebhookVerificationError("Missing webhook headers")
 
-    raw_secret = secret.removeprefix("whsec_")
+    # Polar issues secrets with a `polar_whs_` prefix; Standard Webhooks
+    # baseline uses `whsec_`. Strip whichever is present, then pad the
+    # base64 to a multiple of 4 so Python's strict decoder accepts it.
+    raw_secret = secret
+    for prefix in ("polar_whs_", "whsec_"):
+        if raw_secret.startswith(prefix):
+            raw_secret = raw_secret.removeprefix(prefix)
+            break
+    raw_secret += "=" * ((-len(raw_secret)) % 4)
     try:
         key = base64.b64decode(raw_secret)
     except Exception as exc:
