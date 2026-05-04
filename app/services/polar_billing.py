@@ -22,6 +22,7 @@ We Redis-SETNX it for 30 days so retried deliveries never double-credit.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from typing import Any, Mapping
@@ -52,25 +53,21 @@ def verify_webhook(body: bytes, headers: Mapping[str, str], secret: str) -> dict
     """
     Verify a Polar webhook using the Standard Webhooks scheme.
 
-    Polar issues secrets with a `polar_whs_` prefix; the standardwebhooks
-    library expects `whsec_`. We swap the prefix before delegating so the
-    library can do the actual HMAC-SHA256 verification.
-    """
-    if secret.startswith("polar_whs_"):
-        normalized_secret = "whsec_" + secret.removeprefix("polar_whs_")
-    elif secret.startswith("whsec_"):
-        normalized_secret = secret
-    else:
-        # Some Polar deployments hand back the bare base64 key with no prefix.
-        normalized_secret = "whsec_" + secret
+    Polar's signing code (server/polar/webhook/tasks.py) does:
 
-    # The library expects a plain dict[str, str] of headers (case-insensitive
-    # lookup is done internally). FastAPI's `request.headers` already does
-    # case-insensitive access but the library iterates .items() so normalise.
+        b64secret = base64.b64encode(secret.encode("utf-8")).decode("utf-8")
+        wh = StandardWebhook(b64secret)
+
+    i.e. the HMAC key is the raw UTF-8 bytes of the literal secret string
+    (including the `polar_whs_` prefix). To verify we mirror exactly: take
+    the configured secret string as-is, UTF-8 encode it, base64-encode that,
+    and hand the result to the library.
+    """
+    b64_secret = base64.b64encode(secret.encode("utf-8")).decode("utf-8")
     flat_headers = {k.lower(): v for k, v in headers.items()}
 
     try:
-        wh = Webhook(normalized_secret)
+        wh = Webhook(b64_secret)
         wh.verify(body, flat_headers)
     except _SWVerifyError as exc:
         raise WebhookVerificationError(str(exc)) from exc
