@@ -98,6 +98,7 @@ async def create_checkout(body: CheckoutBody, current: CurrentUser) -> CheckoutR
         url = await polar_billing.create_checkout(
             product_id=product_id,
             customer_email=current.email,
+            external_customer_id=str(current.id),
             success_url=success_url,
             metadata={
                 "user_id": str(current.id),
@@ -166,6 +167,7 @@ async def create_subscription(current: CurrentUser) -> CheckoutResponse:
         url = await polar_billing.create_checkout(
             product_id=product_id,
             customer_email=current.email,
+            external_customer_id=str(current.id),
             success_url=success_url,
             metadata={
                 "user_id": str(current.id),

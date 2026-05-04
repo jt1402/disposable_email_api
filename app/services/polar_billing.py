@@ -106,6 +106,7 @@ async def create_checkout(
     *,
     product_id: str,
     customer_email: str,
+    external_customer_id: str,
     success_url: str,
     metadata: dict[str, str],
 ) -> str:
@@ -114,10 +115,15 @@ async def create_checkout(
 
     Works for both one-time products (bundles) and recurring products
     (metered subscription) — Polar infers the mode from the product type.
+
+    `external_customer_id` is stamped on the Polar customer so that later
+    `/v1/events/ingest` calls (which key on external_customer_id) attribute
+    metered usage to this customer's subscription.
     """
     payload: dict[str, Any] = {
         "products": [product_id],
         "customer_email": customer_email,
+        "external_customer_id": external_customer_id,
         "success_url": success_url,
         "metadata": metadata,
     }
