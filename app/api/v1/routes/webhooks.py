@@ -35,7 +35,15 @@ async def polar_webhook(request: Request) -> dict:
     try:
         event = verify_webhook(body, request.headers, settings.polar_webhook_secret)
     except WebhookVerificationError as exc:
-        logger.warning("Polar webhook signature failed: %s", exc)
+        # Log just enough to debug without leaking secrets. The first few
+        # chars of the configured secret prove which secret the env var
+        # currently holds (sandbox vs prod vs something else).
+        secret_hint = (settings.polar_webhook_secret or "")[:14] + "…"
+        sig_hint = (request.headers.get("webhook-signature") or "")[:24] + "…"
+        logger.warning(
+            "Polar webhook signature failed: %s | secret=%s | sig=%s | id=%s",
+            exc, secret_hint, sig_hint, request.headers.get("webhook-id", ""),
+        )
         raise HTTPException(status_code=400, detail="Invalid signature") from exc
 
     event_type = event.get("type", "")

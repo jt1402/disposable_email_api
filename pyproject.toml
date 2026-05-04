@@ -17,6 +17,7 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.14",
     "httpx>=0.28",
+    "standardwebhooks>=1.0",
     "python-whois>=0.9.5",
     "python-multipart>=0.0.20",
 ]

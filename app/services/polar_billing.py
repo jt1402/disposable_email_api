@@ -22,15 +22,14 @@ We Redis-SETNX it for 30 days so retried deliveries never double-credit.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import json
 import logging
 from typing import Any, Mapping
 
 import httpx
 from sqlalchemy import select
+from standardwebhooks.webhooks import Webhook
+from standardwebhooks.webhooks import WebhookVerificationError as _SWVerifyError
 
 from app.core.config import get_settings
 from app.services import db
@@ -53,47 +52,30 @@ def verify_webhook(body: bytes, headers: Mapping[str, str], secret: str) -> dict
     """
     Verify a Polar webhook using the Standard Webhooks scheme.
 
-    Headers are case-insensitive. Required: webhook-id, webhook-timestamp,
-    webhook-signature. The signature header is space-separated list of
-    `v1,<base64sig>` entries; any one matching is accepted.
-
-    The secret arrives as `whsec_<base64key>`; we strip the prefix and
-    base64-decode to get the raw HMAC key.
+    Polar issues secrets with a `polar_whs_` prefix; the standardwebhooks
+    library expects `whsec_`. We swap the prefix before delegating so the
+    library can do the actual HMAC-SHA256 verification.
     """
-    h = {k.lower(): v for k, v in headers.items()}
-    msg_id = h.get("webhook-id")
-    ts = h.get("webhook-timestamp")
-    sig_header = h.get("webhook-signature")
-    if not msg_id or not ts or not sig_header:
-        raise WebhookVerificationError("Missing webhook headers")
+    if secret.startswith("polar_whs_"):
+        normalized_secret = "whsec_" + secret.removeprefix("polar_whs_")
+    elif secret.startswith("whsec_"):
+        normalized_secret = secret
+    else:
+        # Some Polar deployments hand back the bare base64 key with no prefix.
+        normalized_secret = "whsec_" + secret
 
-    # Polar issues secrets with a `polar_whs_` prefix; Standard Webhooks
-    # baseline uses `whsec_`. Strip whichever is present, then pad the
-    # base64 to a multiple of 4 so Python's strict decoder accepts it.
-    raw_secret = secret
-    for prefix in ("polar_whs_", "whsec_"):
-        if raw_secret.startswith(prefix):
-            raw_secret = raw_secret.removeprefix(prefix)
-            break
-    raw_secret += "=" * ((-len(raw_secret)) % 4)
+    # The library expects a plain dict[str, str] of headers (case-insensitive
+    # lookup is done internally). FastAPI's `request.headers` already does
+    # case-insensitive access but the library iterates .items() so normalise.
+    flat_headers = {k.lower(): v for k, v in headers.items()}
+
     try:
-        key = base64.b64decode(raw_secret)
-    except Exception as exc:
-        raise WebhookVerificationError(f"Invalid secret encoding: {exc}") from exc
+        wh = Webhook(normalized_secret)
+        wh.verify(body, flat_headers)
+    except _SWVerifyError as exc:
+        raise WebhookVerificationError(str(exc)) from exc
 
-    signed_payload = f"{msg_id}.{ts}.{body.decode('utf-8')}".encode("utf-8")
-    expected = base64.b64encode(
-        hmac.new(key, signed_payload, hashlib.sha256).digest()
-    ).decode("utf-8")
-
-    for entry in sig_header.split(" "):
-        version, _, sig = entry.partition(",")
-        if version != "v1":
-            continue
-        if hmac.compare_digest(sig, expected):
-            return json.loads(body)
-
-    raise WebhookVerificationError("No matching signature")
+    return json.loads(body)
 
 
 # ── Idempotency ──────────────────────────────────────────────────────────────
