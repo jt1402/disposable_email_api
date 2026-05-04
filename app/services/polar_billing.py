@@ -1,20 +1,15 @@
 """
-Polar billing integration — credit bundles + metered subscription.
+Polar billing integration — credit bundles only.
 
-Polar (polar.sh) is our merchant of record. We use it for:
-  • One-time bundle purchases (5k / 10k / 25k / 50k / 100k checks)
-    → `order.paid` webhook credits the user's balance.
-  • Metered subscription ($0.003 per check)
-    → `subscription.active` webhook flips billing_mode to 'metered'
-    → every successful /v1/check ingests a usage event to Polar.
+Polar (polar.sh) is our merchant of record for one-time bundle purchases
+(5k / 10k / 25k / 50k / 100k checks). The `order.paid` webhook tops up
+User.credit_balance_checks; `order.refunded` claws it back.
 
 This module exposes:
-  • create_checkout()       create a hosted checkout URL for a product
-  • ingest_event()          report one metered usage event
+  • create_checkout()       create a hosted checkout URL for a bundle
   • verify_webhook()        Standard Webhooks (svix-style) signature check
   • handle_order_paid()     credit a bundle purchase, mark customer
   • handle_order_refunded() reverse a credited bundle on refund
-  • handle_subscription_*() flip billing_mode on subscription lifecycle
 
 Idempotency: every webhook delivery has a unique `webhook-id` header.
 We Redis-SETNX it for 30 days so retried deliveries never double-credit.
@@ -111,14 +106,9 @@ async def create_checkout(
     metadata: dict[str, str],
 ) -> str:
     """
-    Create a hosted checkout session and return the redirect URL.
-
-    Works for both one-time products (bundles) and recurring products
-    (metered subscription) — Polar infers the mode from the product type.
-
-    `external_customer_id` is stamped on the Polar customer so that later
-    `/v1/events/ingest` calls (which key on external_customer_id) attribute
-    metered usage to this customer's subscription.
+    Create a hosted checkout session for a bundle and return the redirect URL.
+    `external_customer_id` is stamped on the Polar customer for future
+    cross-system reconciliation.
     """
     payload: dict[str, Any] = {
         "products": [product_id],
@@ -141,121 +131,6 @@ async def create_checkout(
     return url
 
 
-async def get_subscription(subscription_id: str) -> dict:
-    """
-    Fetch a Polar subscription. Used to read current-period boundaries
-    (current_period_start / end) for the in-dashboard "Usage this period"
-    display. Note: the embedded `meters[]` field lags realtime — pull
-    consumed_units from list_customer_meters() instead.
-    """
-    async with _client() as c:
-        resp = await c.get(f"/v1/subscriptions/{subscription_id}")
-        if resp.status_code >= 400:
-            logger.error(
-                "Polar subscription fetch failed (id=%s): %s %s",
-                subscription_id, resp.status_code, resp.text,
-            )
-            resp.raise_for_status()
-        return resp.json()
-
-
-async def list_customer_meters(customer_id: str) -> list[dict]:
-    """
-    Realtime per-customer meter state from /v1/customer-meters. This is
-    the same data the Polar dashboard's Customer → Usage tab renders, so
-    it stays in sync with what users see in our app vs. theirs.
-    """
-    async with _client() as c:
-        resp = await c.get(
-            "/v1/customer-meters/",
-            params={"customer_id": customer_id, "limit": 50},
-        )
-        if resp.status_code >= 400:
-            logger.error(
-                "Polar customer-meters fetch failed (cust=%s): %s %s",
-                customer_id, resp.status_code, resp.text,
-            )
-            resp.raise_for_status()
-        return (resp.json() or {}).get("items") or []
-
-
-async def cancel_subscription(subscription_id: str) -> None:
-    """
-    Schedule the subscription to cancel at the end of its current billing
-    period via PATCH /v1/subscriptions/{id} {cancel_at_period_end: true}.
-
-    Why not DELETE? DELETE revokes the subscription immediately, and Polar
-    does NOT issue a final invoice for accumulated metered usage on
-    immediate revocation. That meant users on metered who clicked "Switch
-    back to bundles" walked away without being billed for what they used.
-
-    With cancel_at_period_end=true, Polar keeps the subscription active
-    through current_period_end, then auto-cancels and emits a final
-    invoice covering metered consumption (subject to the platform's
-    minimum invoice threshold). The `subscription.canceled` webhook fires
-    at period close — that's where we flip billing_mode back to 'bundles'.
-
-    Until period_end the user remains on metered (and their burn-down
-    credits keep working). They can undo by clicking subscribe again,
-    which is handled separately by the subscribe flow.
-    """
-    async with _client() as c:
-        resp = await c.patch(
-            f"/v1/subscriptions/{subscription_id}",
-            json={"cancel_at_period_end": True},
-        )
-        # 403 AlreadyCanceledSubscription is fine — the user clicked twice
-        # or the period already ended. Treat it as success.
-        if resp.status_code in (200, 204, 403):
-            return
-        logger.error(
-            "Polar subscription cancel-at-period-end failed (id=%s): %s %s",
-            subscription_id, resp.status_code, resp.text,
-        )
-        resp.raise_for_status()
-
-
-async def ingest_event(
-    *,
-    name: str,
-    customer_id: str | None = None,
-    external_customer_id: str | int | None = None,
-    metadata: dict[str, Any] | None = None,
-) -> None:
-    """
-    Report one usage event to Polar.
-
-    Per Polar's events ingest schema, each event identifies the customer
-    by EITHER `customer_id` (Polar's UUID) OR `external_customer_id` (our
-    own ID, resolved via Customer.external_id). The two are mutually
-    exclusive on a single event.
-
-    We prefer `customer_id`: customers created before we started stamping
-    external_customer_id at checkout (or any account that purchased a
-    bundle before that fix) have a NULL external_id on their Polar
-    record, and Polar's external_id is immutable after creation. Sending
-    customer_id directly bypasses the resolution problem entirely.
-    """
-    if not customer_id and external_customer_id is None:
-        raise ValueError("ingest_event requires customer_id or external_customer_id")
-
-    event: dict[str, Any] = {"name": name, "metadata": metadata or {}}
-    if customer_id:
-        event["customer_id"] = customer_id
-    else:
-        event["external_customer_id"] = str(external_customer_id)
-
-    payload = {"events": [event]}
-    async with _client() as c:
-        resp = await c.post("/v1/events/ingest", json=payload)
-        if resp.status_code >= 400:
-            logger.error(
-                "Polar event ingest failed (cust=%s ext=%s): %s %s",
-                customer_id, external_customer_id, resp.status_code, resp.text,
-            )
-            resp.raise_for_status()
-
-
 # ── Webhook handlers ─────────────────────────────────────────────────────────
 
 
@@ -273,8 +148,6 @@ def _user_id_from_metadata(meta: Mapping[str, Any] | None) -> int | None:
 async def handle_order_paid(event: dict, webhook_id: str = "") -> None:
     """
     `order.paid` — a one-time bundle purchase succeeded. Credit the user.
-    For subscription renewals (billing_reason='subscription_cycle') we skip
-    because metered usage is invoiced separately, not credit-topped-up.
     """
     if await _already_processed(webhook_id):
         logger.info("Polar webhook %s already processed, skipping", webhook_id)
@@ -282,11 +155,6 @@ async def handle_order_paid(event: dict, webhook_id: str = "") -> None:
 
     settings = get_settings()
     data = event.get("data") or {}
-
-    if (data.get("billing_reason") or "") == "subscription_cycle":
-        # Metered renewal invoice — no credits to grant.
-        return
-
     metadata = data.get("metadata") or {}
     customer = data.get("customer") or {}
     customer_email = (customer.get("email") or "").strip().lower()
@@ -373,68 +241,3 @@ async def handle_order_refunded(event: dict, webhook_id: str = "") -> None:
         user.credit_balance_checks = max(0, (user.credit_balance_checks or 0) - credits)
         await s.commit()
     logger.info("Refunded %d checks (bundle=%s) from user %s", credits, bundle, user.id)
-
-
-async def handle_subscription_active(event: dict, webhook_id: str = "") -> None:
-    """
-    `subscription.active` (or `.created`) — flip the user into metered mode.
-    From here, /v1/check emits an ingestion event instead of decrementing
-    credit_balance_checks.
-    """
-    if await _already_processed(webhook_id):
-        return
-
-    data = event.get("data") or {}
-    metadata = data.get("metadata") or {}
-    subscription_id = data.get("id") or ""
-    customer = data.get("customer") or {}
-    polar_customer_id = customer.get("id") or ""
-    customer_email = (customer.get("email") or "").strip().lower()
-    user_id = _user_id_from_metadata(metadata)
-
-    async with db.get_session() as s:
-        user = None
-        if user_id is not None:
-            user = await s.get(db.User, user_id)
-        if user is None and polar_customer_id:
-            user = (await s.execute(
-                select(db.User).where(db.User.polar_customer_id == polar_customer_id)
-            )).scalar_one_or_none()
-        if user is None and customer_email:
-            user = (await s.execute(
-                select(db.User).where(db.User.email == customer_email)
-            )).scalar_one_or_none()
-        if user is None:
-            logger.error("subscription.active without resolvable user (sub=%s)", subscription_id)
-            return
-
-        if polar_customer_id and not user.polar_customer_id:
-            user.polar_customer_id = polar_customer_id
-        user.polar_subscription_id = subscription_id
-        user.billing_mode = "metered"
-        await s.commit()
-
-    logger.info("User %s switched to metered (sub=%s)", user.id, subscription_id)
-
-
-async def handle_subscription_inactive(event: dict, webhook_id: str = "") -> None:
-    """
-    `subscription.canceled` / `subscription.revoked` — flip the user back to
-    bundles mode. The remaining credit balance (if any) is preserved.
-    """
-    if await _already_processed(webhook_id):
-        return
-
-    data = event.get("data") or {}
-    subscription_id = data.get("id") or ""
-
-    async with db.get_session() as s:
-        user = (await s.execute(
-            select(db.User).where(db.User.polar_subscription_id == subscription_id)
-        )).scalar_one_or_none()
-        if user is None:
-            return
-        user.billing_mode = "bundles"
-        user.polar_subscription_id = None
-        await s.commit()
-    logger.info("User %s reverted to bundles (sub=%s ended)", user.id, subscription_id)

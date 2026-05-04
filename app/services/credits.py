@@ -1,17 +1,10 @@
 """
-Credit balance bookkeeping + metered usage reporting.
+Credit balance bookkeeping.
 
-Every /v1/check that returns a verdict is "charged" against the owner's
-account via try_charge():
-
-  • billing_mode='bundles'  — decrement User.credit_balance_checks
-    atomically (UPDATE … RETURNING). Returns (False, 0) when empty so
-    the caller can return 402.
-
-  • billing_mode='metered'  — burn down any remaining credit balance
-    first, then once it hits 0 emit a usage event to Polar. Users who
-    bought bundles before subscribing get full value of those credits;
-    once exhausted the meter takes over and Polar invoices monthly.
+Every /v1/check that returns a verdict decrements User.credit_balance_checks
+atomically via try_charge() — UPDATE … RETURNING returns the new balance,
+or None if the row was already at zero. Returning (False, 0) lets the
+caller raise 402.
 
 Bundle top-ups arrive via the Polar `order.paid` webhook
 (see services/polar_billing.py).
@@ -21,8 +14,7 @@ import logging
 
 from sqlalchemy import text
 
-from app.core.config import get_settings
-from app.services import db, polar_billing
+from app.services import db
 
 logger = logging.getLogger(__name__)
 
@@ -46,41 +38,9 @@ async def try_charge(user_id: int) -> tuple[bool, int]:
     """
     Charge one check against the user.
 
-    Returns (charged, new_balance):
-      - bundles mode: (True, balance) on success; (False, 0) when empty.
-      - metered mode: (True, balance) while credits remain (burn-down);
-        (True, 0) once depleted (Polar invoices the usage).
+    Returns (charged, new_balance): (True, balance) on success;
+    (False, 0) when the credit balance is already empty.
     """
-    async with db.get_session() as s:
-        user = await s.get(db.User, user_id)
-        mode = (user.billing_mode if user else "bundles") or "bundles"
-        polar_customer_id = user.polar_customer_id if user else None
-
-    if mode == "metered":
-        # Burn-down: spend any remaining bundle credits first so the user
-        # gets full value of pre-paid bundles even while subscribed. Only
-        # once the balance is empty do we start metering Polar.
-        new_balance = await _try_decrement(user_id)
-        if new_balance is not None:
-            return True, new_balance
-
-        # Out of pre-paid credits — emit the metered event. Fire-and-forget
-        # so a Polar outage doesn't fail otherwise-valid requests; worst
-        # case we under-bill (the user already paid for the subscription).
-        # Prefer Polar's customer_id (UUID) when we have it, so historical
-        # customers — whose external_id couldn't be backfilled (Polar makes
-        # it immutable) — still attribute correctly.
-        try:
-            settings = get_settings()
-            await polar_billing.ingest_event(
-                name=settings.polar_meter_event_name,
-                customer_id=polar_customer_id,
-                external_customer_id=None if polar_customer_id else user_id,
-            )
-        except Exception as exc:
-            logger.error("Polar event ingest failed for user %s: %s", user_id, exc)
-        return True, 0
-
     new_balance = await _try_decrement(user_id)
     if new_balance is None:
         return False, 0

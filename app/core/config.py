@@ -21,10 +21,10 @@ class Settings(BaseSettings):
     unkey_root_key: str = ""
     unkey_api_id: str = ""
 
-    # Polar — credit bundles (one-time purchases) + metered subscription.
-    # Polar is our merchant of record; products live in the Polar dashboard
-    # and we reference them by UUID. POLAR_SERVER toggles between
-    # production (api.polar.sh) and sandbox (sandbox-api.polar.sh).
+    # Polar — credit bundle purchases (one-time). Polar is our merchant of
+    # record; products live in the Polar dashboard and we reference them by
+    # UUID. POLAR_SERVER toggles between production (api.polar.sh) and
+    # sandbox (sandbox-api.polar.sh).
     polar_access_token: str = ""
     polar_webhook_secret: str = ""
     polar_server: str = "production"  # "production" | "sandbox"
@@ -33,11 +33,6 @@ class Settings(BaseSettings):
     polar_product_bundle_25k: str = ""
     polar_product_bundle_50k: str = ""
     polar_product_bundle_100k: str = ""
-    polar_product_metered: str = ""
-    # Event name the metered "API_checks" meter filters on. Backend emits
-    # ingestion events with this exact name on every successful /v1/check
-    # for users in metered billing mode.
-    polar_meter_event_name: str = "api_check"
 
     # Email (Resend) — magic links, verification mails
     resend_api_key: str = ""

@@ -15,8 +15,6 @@ from app.services.polar_billing import (
     WebhookVerificationError,
     handle_order_paid,
     handle_order_refunded,
-    handle_subscription_active,
-    handle_subscription_inactive,
     verify_webhook,
 )
 
@@ -54,13 +52,9 @@ async def polar_webhook(request: Request) -> dict:
         await handle_order_paid(event, webhook_id=webhook_id)
     elif event_type == "order.refunded":
         await handle_order_refunded(event, webhook_id=webhook_id)
-    elif event_type in ("subscription.created", "subscription.active"):
-        await handle_subscription_active(event, webhook_id=webhook_id)
-    elif event_type in ("subscription.canceled", "subscription.revoked"):
-        await handle_subscription_inactive(event, webhook_id=webhook_id)
     else:
-        # Subscribed-but-unhandled events (e.g. subscription.updated) are
-        # still acknowledged with 200 so Polar doesn't retry forever.
+        # Subscribed-but-unhandled events still get 200 so Polar doesn't
+        # retry forever.
         logger.info("Polar webhook %s ignored", event_type)
 
     return {"received": True}

@@ -35,11 +35,8 @@ class User(Base):
     Dashboard user account. Created via magic-link signup from the landing page.
     A user can own multiple API keys.
 
-    Billing: Polar is our merchant of record.
-      - billing_mode='bundles' (default): one-time bundle purchases top up
-        credit_balance_checks. Every /v1/check decrements by 1.
-      - billing_mode='metered': active metered subscription. Each /v1/check
-        emits an ingestion event to Polar; credits are not consumed.
+    Billing: Polar is our merchant of record. One-time bundle purchases top
+    up credit_balance_checks; every /v1/check decrements by 1.
     """
     __tablename__ = "users"
 
@@ -55,15 +52,9 @@ class User(Base):
     polar_customer_id: Mapped[str | None] = mapped_column(
         String(64), unique=True, nullable=True, index=True
     )
-    polar_subscription_id: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True, index=True
-    )
-    billing_mode: Mapped[str] = mapped_column(
-        String(16), default="bundles", server_default="bundles"
-    )
-    # Pre-paid checks remaining (bundles mode). Decremented on every successful
-    # /v1/check; topped up by bundle purchases via the Polar webhook. New
-    # signups get a bootstrap grant of settings.free_signup_credits (default 100).
+    # Pre-paid checks remaining. Decremented on every successful /v1/check;
+    # topped up by bundle purchases via the Polar webhook. New signups get a
+    # bootstrap grant of settings.free_signup_credits (default 100).
     credit_balance_checks: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

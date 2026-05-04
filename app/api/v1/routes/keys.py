@@ -68,11 +68,9 @@ async def list_keys(current: CurrentUser) -> list[KeySummary]:
 async def create_key(body: CreateKeyBody, current: CurrentUser) -> CreatedKeyResponse:
     async with db.get_session() as s:
         user = await s.get(db.User, current.id)
-        # "Paid" = has a Polar customer record OR is on a metered subscription.
-        # Either path indicates the user is past the free-tier gate.
-        has_purchased = bool(
-            user and (user.polar_customer_id or (user.billing_mode == "metered"))
-        )
+        # "Paid" = has a Polar customer record (i.e. has bought at least
+        # one bundle), past the free-tier gate.
+        has_purchased = bool(user and user.polar_customer_id)
         active_count = (
             await s.execute(
                 select(func.count())
