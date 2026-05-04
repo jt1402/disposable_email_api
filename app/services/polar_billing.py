@@ -135,6 +135,27 @@ async def create_checkout(
     return url
 
 
+async def cancel_subscription(subscription_id: str) -> None:
+    """
+    Revoke a Polar subscription immediately (DELETE /v1/subscriptions/{id}).
+
+    Polar will fire a `subscription.revoked` webhook back to us, which is
+    where we flip the user's billing_mode back to 'bundles'. We don't
+    update the DB here so the webhook remains the single source of truth.
+    """
+    async with _client() as c:
+        resp = await c.delete(f"/v1/subscriptions/{subscription_id}")
+        # 403 AlreadyCanceledSubscription is fine — the user clicked twice
+        # or the webhook already revoked us. Treat it as success.
+        if resp.status_code in (200, 204, 403):
+            return
+        logger.error(
+            "Polar subscription revoke failed (id=%s): %s %s",
+            subscription_id, resp.status_code, resp.text,
+        )
+        resp.raise_for_status()
+
+
 async def ingest_event(
     *,
     name: str,

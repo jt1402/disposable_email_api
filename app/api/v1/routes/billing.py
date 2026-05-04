@@ -112,6 +112,38 @@ async def create_checkout(body: CheckoutBody, current: CurrentUser) -> CheckoutR
     return CheckoutResponse(url=url)
 
 
+@router.post("/cancel-subscription")
+async def cancel_subscription(current: CurrentUser) -> dict:
+    """
+    Cancel the current user's metered subscription immediately.
+
+    Polar invoices the partial-period usage and fires `subscription.revoked`
+    back to our webhook, which flips billing_mode back to 'bundles'. The
+    user's bundle credits (if any) become spendable again.
+    """
+    async with db.get_session() as s:
+        user = await s.get(db.User, current.id)
+        sub_id = user.polar_subscription_id if user else None
+
+    if not sub_id:
+        raise HTTPException(
+            status_code=409,
+            detail=ErrorDetail(
+                code="no_active_subscription",
+                http_status=409,
+                message="No active metered subscription to cancel.",
+            ).model_dump(),
+        )
+
+    try:
+        await polar_billing.cancel_subscription(sub_id)
+    except Exception as exc:
+        logger.error("Polar cancel failed for user %s: %s", current.id, exc)
+        raise _provider_error() from exc
+
+    return {"ok": True}
+
+
 @router.post("/subscribe", response_model=CheckoutResponse)
 async def create_subscription(current: CurrentUser) -> CheckoutResponse:
     """Start a Polar Checkout for the metered subscription product."""
