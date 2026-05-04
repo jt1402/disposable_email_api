@@ -40,6 +40,14 @@ class BalanceResponse(BaseModel):
     billing_mode: str = Field(description="bundles | metered")
 
 
+class UsageResponse(BaseModel):
+    available: bool = Field(description="false when user isn't metered or Polar lookup failed")
+    events: int = 0
+    amount_cents: int = 0
+    period_start: str | None = None
+    period_end: str | None = None
+
+
 def _billing_unavailable() -> HTTPException:
     return HTTPException(
         status_code=503,
@@ -111,6 +119,44 @@ async def create_checkout(body: CheckoutBody, current: CurrentUser) -> CheckoutR
         raise _provider_error() from exc
 
     return CheckoutResponse(url=url)
+
+
+@router.get("/usage", response_model=UsageResponse)
+async def get_usage(current: CurrentUser) -> UsageResponse:
+    """
+    Current-period metered usage for the dashboard. Returns available=false
+    for non-metered users (the UI then hides the panel). Failures degrade
+    to available=false rather than 5xx so a Polar outage doesn't break
+    the billing page for everyone.
+    """
+    settings = get_settings()
+    async with db.get_session() as s:
+        user = await s.get(db.User, current.id)
+        sub_id = user.polar_subscription_id if user else None
+        mode = (user.billing_mode if user else "bundles") or "bundles"
+
+    if mode != "metered" or not sub_id or not settings.polar_access_token:
+        return UsageResponse(available=False)
+
+    try:
+        sub = await polar_billing.get_subscription(sub_id)
+    except Exception as exc:
+        logger.error("Polar usage fetch failed for user %s: %s", current.id, exc)
+        return UsageResponse(available=False)
+
+    events = 0
+    amount_cents = 0
+    for m in sub.get("meters") or []:
+        events += int(m.get("consumed_units") or 0)
+        amount_cents += int(m.get("amount") or 0)
+
+    return UsageResponse(
+        available=True,
+        events=events,
+        amount_cents=amount_cents,
+        period_start=sub.get("current_period_start"),
+        period_end=sub.get("current_period_end"),
+    )
 
 
 @router.post("/cancel-subscription")

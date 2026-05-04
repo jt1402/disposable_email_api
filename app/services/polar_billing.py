@@ -141,6 +141,23 @@ async def create_checkout(
     return url
 
 
+async def get_subscription(subscription_id: str) -> dict:
+    """
+    Fetch a Polar subscription. Used to read current-period meter usage
+    (consumed_units / amount / period boundaries) for the in-dashboard
+    "Usage this period" display.
+    """
+    async with _client() as c:
+        resp = await c.get(f"/v1/subscriptions/{subscription_id}")
+        if resp.status_code >= 400:
+            logger.error(
+                "Polar subscription fetch failed (id=%s): %s %s",
+                subscription_id, resp.status_code, resp.text,
+            )
+            resp.raise_for_status()
+        return resp.json()
+
+
 async def cancel_subscription(subscription_id: str) -> None:
     """
     Revoke a Polar subscription immediately (DELETE /v1/subscriptions/{id}).
