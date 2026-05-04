@@ -1,24 +1,25 @@
 """
-Billing routes — Stripe checkout for credit bundles + account balance.
+Billing routes — Polar checkout for credit bundles + metered subscription.
 
-POST /v1/billing/checkout   create a Stripe Checkout Session for a bundle
-GET  /v1/billing/balance    current credit balance for the logged-in user
+POST /v1/billing/checkout    Polar Checkout for a one-time credit bundle
+POST /v1/billing/subscribe   Polar Checkout for the metered subscription
+GET  /v1/billing/balance     credit balance + billing mode for the current user
 
-Model: one-time bundle purchases (mode: "payment"). Every successful
-/v1/check decrements User.credit_balance_checks by 1. When the balance
-runs out, /v1/check returns 402 and the user buys a bundle.
+Bundles model: every successful /v1/check decrements User.credit_balance_checks.
+Metered model: every successful /v1/check emits a usage event to Polar; the
+billing_mode column gates which path runs. Switching to metered happens via the
+`subscription.active` webhook after the user completes Polar checkout.
 """
 
 import logging
 
-import stripe
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api.v1.deps import CurrentUser
 from app.core.config import get_settings
 from app.models.errors import ErrorDetail
-from app.services import db
+from app.services import db, polar_billing
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,29 @@ class CheckoutResponse(BaseModel):
 class BalanceResponse(BaseModel):
     credit_balance_checks: int
     has_purchased: bool
+    billing_mode: str = Field(description="bundles | metered")
+
+
+def _billing_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=ErrorDetail(
+            code="billing_unavailable",
+            http_status=503,
+            message="Billing is not configured in this environment.",
+        ).model_dump(),
+    )
+
+
+def _provider_error() -> HTTPException:
+    return HTTPException(
+        status_code=502,
+        detail=ErrorDetail(
+            code="billing_provider_error",
+            http_status=502,
+            message="Could not start checkout. Please retry.",
+        ).model_dump(),
+    )
 
 
 @router.get("/balance", response_model=BalanceResponse)
@@ -43,28 +67,23 @@ async def get_balance(current: CurrentUser) -> BalanceResponse:
     async with db.get_session() as s:
         user = await s.get(db.User, current.id)
         balance = int(user.credit_balance_checks) if user else 0
-        has_purchased = bool(user and user.stripe_customer_id)
+        has_purchased = bool(user and user.polar_customer_id)
+        mode = (user.billing_mode if user else "bundles") or "bundles"
     return BalanceResponse(
         credit_balance_checks=balance,
         has_purchased=has_purchased,
+        billing_mode=mode,
     )
 
 
 @router.post("/checkout", response_model=CheckoutResponse)
 async def create_checkout(body: CheckoutBody, current: CurrentUser) -> CheckoutResponse:
     settings = get_settings()
-    if not settings.stripe_secret_key:
-        raise HTTPException(
-            status_code=503,
-            detail=ErrorDetail(
-                code="billing_unavailable",
-                http_status=503,
-                message="Billing is not configured in this environment.",
-            ).model_dump(),
-        )
-    price = settings.bundle_price_id(body.bundle)
+    if not settings.polar_access_token:
+        raise _billing_unavailable()
+    product_id = settings.bundle_product_id(body.bundle)
     credits = settings.bundle_credits(body.bundle)
-    if not price or credits <= 0:
+    if not product_id or credits <= 0:
         raise HTTPException(
             status_code=422,
             detail=ErrorDetail(
@@ -74,40 +93,55 @@ async def create_checkout(body: CheckoutBody, current: CurrentUser) -> CheckoutR
             ).model_dump(),
         )
 
-    # Reuse an existing Stripe customer if we have one so all invoices land
-    # on the same account; first-time purchasers checkout as customer_email.
-    async with db.get_session() as s:
-        user = await s.get(db.User, current.id)
-        stripe_customer_id = user.stripe_customer_id if user else None
-
-    stripe.api_key = settings.stripe_secret_key
+    success_url = f"{settings.app_base_url.rstrip('/')}/dashboard/billing?checkout=success"
     try:
-        session_kwargs: dict = {
-            "mode": "payment",
-            "line_items": [{"price": price, "quantity": 1}],
-            "success_url": f"{settings.app_base_url.rstrip('/')}/dashboard/billing?checkout=success",
-            "cancel_url": f"{settings.app_base_url.rstrip('/')}/dashboard/billing?checkout=cancelled",
-            "client_reference_id": str(current.id),
-            "metadata": {"user_id": str(current.id), "bundle": body.bundle},
-        }
-        if stripe_customer_id:
-            session_kwargs["customer"] = stripe_customer_id
-        else:
-            session_kwargs["customer_email"] = current.email
-            # mode=payment defaults to customer_creation='if_required' which often
-            # skips customer creation entirely, leaving session.customer null and
-            # our has_purchased gate stuck at False. Force creation every time.
-            session_kwargs["customer_creation"] = "always"
-        session = stripe.checkout.Session.create(**session_kwargs)
-    except stripe.StripeError as exc:
-        logger.error("Stripe checkout.create failed for user %s: %s", current.id, exc)
-        raise HTTPException(
-            status_code=502,
-            detail=ErrorDetail(
-                code="billing_provider_error",
-                http_status=502,
-                message="Could not start checkout. Please retry.",
-            ).model_dump(),
-        ) from exc
+        url = await polar_billing.create_checkout(
+            product_id=product_id,
+            customer_email=current.email,
+            success_url=success_url,
+            metadata={
+                "user_id": str(current.id),
+                "bundle": body.bundle,
+                "kind": "bundle",
+            },
+        )
+    except Exception as exc:
+        logger.error("Polar checkout failed for user %s: %s", current.id, exc)
+        raise _provider_error() from exc
 
-    return CheckoutResponse(url=session.url or "")
+    return CheckoutResponse(url=url)
+
+
+@router.post("/subscribe", response_model=CheckoutResponse)
+async def create_subscription(current: CurrentUser) -> CheckoutResponse:
+    """Start a Polar Checkout for the metered subscription product."""
+    settings = get_settings()
+    if not settings.polar_access_token:
+        raise _billing_unavailable()
+    product_id = settings.polar_product_metered
+    if not product_id:
+        raise HTTPException(
+            status_code=503,
+            detail=ErrorDetail(
+                code="metered_unavailable",
+                http_status=503,
+                message="Metered billing is not configured in this environment.",
+            ).model_dump(),
+        )
+
+    success_url = f"{settings.app_base_url.rstrip('/')}/dashboard/billing?checkout=success&plan=metered"
+    try:
+        url = await polar_billing.create_checkout(
+            product_id=product_id,
+            customer_email=current.email,
+            success_url=success_url,
+            metadata={
+                "user_id": str(current.id),
+                "kind": "metered",
+            },
+        )
+    except Exception as exc:
+        logger.error("Polar subscribe failed for user %s: %s", current.id, exc)
+        raise _provider_error() from exc
+
+    return CheckoutResponse(url=url)

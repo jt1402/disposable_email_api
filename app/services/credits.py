@@ -1,32 +1,57 @@
 """
-Credit balance bookkeeping.
+Credit balance bookkeeping + metered usage reporting.
 
-Every /v1/check that returns a verdict consumes one credit from the
-owner's User.credit_balance_checks. Bundle purchases top the balance
-up via the Stripe webhook (see services/stripe_billing.py).
+Every /v1/check that returns a verdict is "charged" against the owner's
+account. Two modes share the same entry point:
 
-The decrement is done via a single UPDATE … WHERE credit_balance_checks > 0
-RETURNING credit_balance_checks so two concurrent requests can't both
-succeed on the last credit.
+  • billing_mode='bundles' — atomically decrement
+    User.credit_balance_checks via UPDATE … RETURNING. Returns
+    (False, 0) when out of credit so the caller can 402.
+
+  • billing_mode='metered' — emit one ingestion event to Polar
+    (the API_checks meter aggregates them into the monthly invoice).
+    Always returns (True, 0) — there is no balance to deplete.
+
+Bundle top-ups arrive via the Polar `order.paid` webhook
+(see services/polar_billing.py).
 """
 
 import logging
 
 from sqlalchemy import text
 
-from app.services import db
+from app.core.config import get_settings
+from app.services import db, polar_billing
 
 logger = logging.getLogger(__name__)
 
 
 async def try_charge(user_id: int) -> tuple[bool, int]:
     """
-    Atomically deduct one check from the user's balance.
+    Charge one check against the user.
 
     Returns (charged, new_balance):
-      - (True,  new_balance)       deducted successfully
-      - (False, 0)                 no balance remaining; caller should 402
+      - bundles mode: (True, balance) on success; (False, 0) when empty.
+      - metered mode: (True, 0) — Polar invoices the usage.
     """
+    async with db.get_session() as s:
+        user = await s.get(db.User, user_id)
+        mode = (user.billing_mode if user else "bundles") or "bundles"
+
+    if mode == "metered":
+        # Fire-and-forget so a Polar outage doesn't fail otherwise-paid
+        # check requests; the user is on a metered plan and we will retry
+        # on next request anyway. Worst case we under-bill.
+        try:
+            settings = get_settings()
+            await polar_billing.ingest_event(
+                name=settings.polar_meter_event_name,
+                external_customer_id=user_id,
+            )
+        except Exception as exc:
+            logger.error("Polar event ingest failed for user %s: %s", user_id, exc)
+        return True, 0
+
     async with db.get_session() as s:
         row = (await s.execute(
             text(

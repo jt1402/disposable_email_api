@@ -1,69 +1,58 @@
 """
-POST /webhooks/stripe
+POST /v1/webhooks/polar
 
-Stripe sends signed webhook events here.
-Signature verified before any processing to prevent spoofing.
+Polar sends signed webhook events here using the Standard Webhooks scheme
+(https://www.standardwebhooks.com/). Signature is verified before any
+side-effects so a spoofed POST cannot grant credits.
 """
 
-import json
 import logging
 
-import stripe
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from app.core.config import get_settings
-from app.services.stripe_billing import handle_checkout_completed
+from app.services.polar_billing import (
+    WebhookVerificationError,
+    handle_order_paid,
+    handle_order_refunded,
+    handle_subscription_active,
+    handle_subscription_inactive,
+    verify_webhook,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-def _to_dict(obj):
-    """Recursively convert StripeObject to plain dict."""
-    if isinstance(obj, list):
-        return [_to_dict(i) for i in obj]
-    if hasattr(obj, "keys"):
-        return {k: _to_dict(obj[k]) for k in obj.keys()}
-    return obj
-
-
-@router.post("/webhooks/stripe", include_in_schema=False)
-async def stripe_webhook(
-    request: Request,
-    stripe_signature: str | None = Header(None, alias="Stripe-Signature"),
-) -> dict:
+@router.post("/v1/webhooks/polar", include_in_schema=False)
+async def polar_webhook(request: Request) -> dict:
     settings = get_settings()
-    payload = await request.body()
+    if not settings.polar_webhook_secret:
+        raise HTTPException(status_code=503, detail="Webhook secret not configured")
 
-    if not stripe_signature or not settings.stripe_webhook_secret:
-        raise HTTPException(status_code=400, detail="Missing signature")
-
-    payload_dict = json.loads(payload)
+    body = await request.body()
     try:
-        event = stripe.Webhook.construct_event(
-            payload, stripe_signature, settings.stripe_webhook_secret
-        )
-        event_type = event["type"]
-        event_data = payload_dict["data"]["object"]
-    except stripe.SignatureVerificationError as e:
-        logger.warning("Signature verification failed: %s", str(e))
-        # Try v2 thin event format (Stripe Workbench)
-        try:
-            thin_event = stripe.Webhook.construct_thin_event(
-                payload, stripe_signature, settings.stripe_webhook_secret
-            )
-            event_type = thin_event.type
-            full_event = stripe.Event.retrieve(thin_event.id)
-            event_data = _to_dict(full_event["data"]["object"])
-        except Exception as e2:
-            logger.warning("Thin event verification also failed: %s", str(e2))
-            raise HTTPException(status_code=400, detail="Invalid signature")
+        event = verify_webhook(body, request.headers, settings.polar_webhook_secret)
+    except WebhookVerificationError as exc:
+        logger.warning("Polar webhook signature failed: %s", exc)
+        raise HTTPException(status_code=400, detail="Invalid signature") from exc
 
-    logger.info("Stripe webhook: %s", event_type)
+    event_type = event.get("type", "")
+    webhook_id = request.headers.get("webhook-id", "")
+    logger.info("Polar webhook: %s (id=%s)", event_type, webhook_id)
 
-    event_id = payload_dict.get("id", "")
-    if event_type == "checkout.session.completed":
-        await handle_checkout_completed(event_data, event_id=event_id)
+    if event_type == "order.paid":
+        await handle_order_paid(event, webhook_id=webhook_id)
+    elif event_type == "order.refunded":
+        await handle_order_refunded(event, webhook_id=webhook_id)
+    elif event_type in ("subscription.created", "subscription.active"):
+        await handle_subscription_active(event, webhook_id=webhook_id)
+    elif event_type in ("subscription.canceled", "subscription.revoked"):
+        await handle_subscription_inactive(event, webhook_id=webhook_id)
+    else:
+        # Subscribed-but-unhandled events (e.g. subscription.updated) are
+        # still acknowledged with 200 so Polar doesn't retry forever.
+        logger.info("Polar webhook %s ignored", event_type)
 
     return {"received": True}

@@ -21,14 +21,23 @@ class Settings(BaseSettings):
     unkey_root_key: str = ""
     unkey_api_id: str = ""
 
-    # Stripe — credit bundles (one-time purchases, mode=payment)
-    stripe_secret_key: str = ""
-    stripe_webhook_secret: str = ""
-    stripe_price_bundle_5k: str = ""
-    stripe_price_bundle_10k: str = ""
-    stripe_price_bundle_25k: str = ""
-    stripe_price_bundle_50k: str = ""
-    stripe_price_bundle_100k: str = ""
+    # Polar — credit bundles (one-time purchases) + metered subscription.
+    # Polar is our merchant of record; products live in the Polar dashboard
+    # and we reference them by UUID. POLAR_SERVER toggles between
+    # production (api.polar.sh) and sandbox (sandbox-api.polar.sh).
+    polar_access_token: str = ""
+    polar_webhook_secret: str = ""
+    polar_server: str = "production"  # "production" | "sandbox"
+    polar_product_bundle_5k: str = ""
+    polar_product_bundle_10k: str = ""
+    polar_product_bundle_25k: str = ""
+    polar_product_bundle_50k: str = ""
+    polar_product_bundle_100k: str = ""
+    polar_product_metered: str = ""
+    # Event name the metered "API_checks" meter filters on. Backend emits
+    # ingestion events with this exact name on every successful /v1/check
+    # for users in metered billing mode.
+    polar_meter_event_name: str = "api_check"
 
     # Email (Resend) — magic links, verification mails
     resend_api_key: str = ""
@@ -94,14 +103,31 @@ class Settings(BaseSettings):
             "100k": self.bundle_checks_100k,
         }.get(bundle, 0)
 
-    def bundle_price_id(self, bundle: str) -> str:
+    def bundle_product_id(self, bundle: str) -> str:
         return {
-            "5k": self.stripe_price_bundle_5k,
-            "10k": self.stripe_price_bundle_10k,
-            "25k": self.stripe_price_bundle_25k,
-            "50k": self.stripe_price_bundle_50k,
-            "100k": self.stripe_price_bundle_100k,
+            "5k": self.polar_product_bundle_5k,
+            "10k": self.polar_product_bundle_10k,
+            "25k": self.polar_product_bundle_25k,
+            "50k": self.polar_product_bundle_50k,
+            "100k": self.polar_product_bundle_100k,
         }.get(bundle, "")
+
+    def bundle_from_product_id(self, product_id: str) -> str:
+        return {
+            self.polar_product_bundle_5k: "5k",
+            self.polar_product_bundle_10k: "10k",
+            self.polar_product_bundle_25k: "25k",
+            self.polar_product_bundle_50k: "50k",
+            self.polar_product_bundle_100k: "100k",
+        }.get(product_id, "")
+
+    @property
+    def polar_api_base(self) -> str:
+        return (
+            "https://sandbox-api.polar.sh"
+            if self.polar_server.lower() == "sandbox"
+            else "https://api.polar.sh"
+        )
 
 
 @lru_cache

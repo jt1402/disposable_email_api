@@ -89,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(keys.router, prefix="/v1")
     app.include_router(usage.router, prefix="/v1")
     app.include_router(billing.router, prefix="/v1")
+    # webhooks router declares its own /v1/webhooks/* paths.
     app.include_router(webhooks.router)
 
     # ── Unified error envelope ────────────────────────────────────────────────
