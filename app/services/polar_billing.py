@@ -181,20 +181,35 @@ async def list_customer_meters(customer_id: str) -> list[dict]:
 
 async def cancel_subscription(subscription_id: str) -> None:
     """
-    Revoke a Polar subscription immediately (DELETE /v1/subscriptions/{id}).
+    Schedule the subscription to cancel at the end of its current billing
+    period via PATCH /v1/subscriptions/{id} {cancel_at_period_end: true}.
 
-    Polar will fire a `subscription.revoked` webhook back to us, which is
-    where we flip the user's billing_mode back to 'bundles'. We don't
-    update the DB here so the webhook remains the single source of truth.
+    Why not DELETE? DELETE revokes the subscription immediately, and Polar
+    does NOT issue a final invoice for accumulated metered usage on
+    immediate revocation. That meant users on metered who clicked "Switch
+    back to bundles" walked away without being billed for what they used.
+
+    With cancel_at_period_end=true, Polar keeps the subscription active
+    through current_period_end, then auto-cancels and emits a final
+    invoice covering metered consumption (subject to the platform's
+    minimum invoice threshold). The `subscription.canceled` webhook fires
+    at period close — that's where we flip billing_mode back to 'bundles'.
+
+    Until period_end the user remains on metered (and their burn-down
+    credits keep working). They can undo by clicking subscribe again,
+    which is handled separately by the subscribe flow.
     """
     async with _client() as c:
-        resp = await c.delete(f"/v1/subscriptions/{subscription_id}")
+        resp = await c.patch(
+            f"/v1/subscriptions/{subscription_id}",
+            json={"cancel_at_period_end": True},
+        )
         # 403 AlreadyCanceledSubscription is fine — the user clicked twice
-        # or the webhook already revoked us. Treat it as success.
+        # or the period already ended. Treat it as success.
         if resp.status_code in (200, 204, 403):
             return
         logger.error(
-            "Polar subscription revoke failed (id=%s): %s %s",
+            "Polar subscription cancel-at-period-end failed (id=%s): %s %s",
             subscription_id, resp.status_code, resp.text,
         )
         resp.raise_for_status()

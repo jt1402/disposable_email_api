@@ -188,11 +188,13 @@ async def get_usage(current: CurrentUser) -> UsageResponse:
 @router.post("/cancel-subscription")
 async def cancel_subscription(current: CurrentUser) -> dict:
     """
-    Cancel the current user's metered subscription immediately.
+    Schedule the current user's metered subscription to cancel at the
+    end of the current billing period.
 
-    Polar invoices the partial-period usage and fires `subscription.revoked`
-    back to our webhook, which flips billing_mode back to 'bundles'. The
-    user's bundle credits (if any) become spendable again.
+    Polar issues a final invoice covering the period's metered usage,
+    auto-cancels the subscription at period_end, and fires
+    `subscription.canceled` to our webhook — where we flip billing_mode
+    back to 'bundles'. Until then the user remains on metered.
     """
     async with db.get_session() as s:
         user = await s.get(db.User, current.id)
