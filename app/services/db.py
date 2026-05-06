@@ -161,6 +161,12 @@ class Check(Base):
     domain: Mapped[str] = mapped_column(String(255), index=True)
     risk_score: Mapped[int] = mapped_column(Integer)
     recommendation: Mapped[str] = mapped_column(String(32))
+    # Categorical reasoning fields surfaced in the dashboard's recent-checks
+    # table so customers can see *why* a verdict landed without a re-run.
+    # Nullable for rows written before the columns existed.
+    risk_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    confidence_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    disposable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     path_taken: Mapped[str] = mapped_column(String(16), default="standard")
     cached: Mapped[bool] = mapped_column(Boolean, default=False)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)

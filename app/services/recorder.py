@@ -28,6 +28,9 @@ async def record_check(
     path_taken: str,
     cached: bool,
     latency_ms: int,
+    risk_level: str | None = None,
+    confidence_level: str | None = None,
+    disposable: bool | None = None,
 ) -> None:
     """
     Write one Check row and upsert DomainStats counters.
@@ -49,6 +52,9 @@ async def record_check(
                 domain=domain,
                 risk_score=risk_score,
                 recommendation=recommendation,
+                risk_level=risk_level,
+                confidence_level=confidence_level,
+                disposable=disposable,
                 path_taken=path_taken,
                 cached=cached,
                 latency_ms=latency_ms,

@@ -145,6 +145,9 @@ class RecentCheck(BaseModel):
     domain: str
     risk_score: int
     recommendation: str
+    risk_level: str | None = None
+    confidence_level: str | None = None
+    disposable: bool | None = None
     latency_ms: int
     cached: bool
     checked_at: str
@@ -176,6 +179,9 @@ async def recent_checks(
                 domain=r.domain,
                 risk_score=r.risk_score,
                 recommendation=r.recommendation,
+                risk_level=r.risk_level,
+                confidence_level=r.confidence_level,
+                disposable=r.disposable,
                 latency_ms=r.latency_ms,
                 cached=r.cached,
                 checked_at=r.checked_at.isoformat(),
