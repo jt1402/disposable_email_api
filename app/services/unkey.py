@@ -65,11 +65,32 @@ async def verify_key(api_key: str) -> VerifyResult:
     meta = data.get("meta") or {}
     risk_profile = meta.get("risk_profile", "")
 
+    # Unkey v2 nests the customer reference inside `data.identity.externalId`.
+    # Older / v1-style payloads put it at `data.externalId` (or `data.ownerId`).
+    # Try the v2 location first, then fall back so a mixed environment still
+    # resolves to our user.id and credits actually get charged.
+    identity = data.get("identity") or {}
+    owner_id = (
+        identity.get("externalId")
+        or data.get("externalId")
+        or data.get("ownerId")
+        or ""
+    )
+
+    credits_field = data.get("credits")
+    if isinstance(credits_field, dict):
+        # Legacy shape: {"remaining": N, ...}
+        remaining = credits_field.get("remaining", data.get("remaining"))
+    elif isinstance(credits_field, (int, float)):
+        remaining = int(credits_field)
+    else:
+        remaining = data.get("remaining")
+
     return VerifyResult(
         valid=True,
         key_id=data.get("keyId", ""),
-        owner_id=data.get("externalId", data.get("ownerId", "")),
-        remaining=(data.get("credits") or {}).get("remaining", data.get("remaining")),
+        owner_id=owner_id,
+        remaining=remaining,
         risk_profile=risk_profile,
     )
 

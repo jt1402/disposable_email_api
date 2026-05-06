@@ -10,6 +10,7 @@ Headers:
 Returns the 5-block CheckResponse (meta / verdict / score / signals / checks).
 """
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -21,6 +22,8 @@ from app.models.errors import invalid_email_param_error, quota_exceeded_error
 from app.services import credits
 from app.services.redis_client import get_redis
 from app.services.unkey import VerifyResult
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -46,7 +49,15 @@ async def _charge_or_402(auth: VerifyResult) -> None:
     if auth.owner_id == "dev":
         return
     if not auth.owner_id.isdigit():
-        return  # unknown owner shape; let the request through rather than falsely 402
+        # We can't map this key back to a user — let the request through
+        # rather than falsely 402, but loud-log it so a misconfigured Unkey
+        # response (e.g. missing identity.externalId) doesn't silently grant
+        # free checks like it did before the v2 identity-nesting fix.
+        logger.warning(
+            "Skipping credit charge: owner_id=%r is not numeric (key=%s).",
+            auth.owner_id, auth.key_id,
+        )
+        return
     charged, _ = await credits.try_charge(int(auth.owner_id))
     if not charged:
         raise HTTPException(status_code=402, detail=quota_exceeded_error().model_dump())
