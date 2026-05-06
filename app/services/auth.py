@@ -17,10 +17,10 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 
 from app.core.config import get_settings
-from app.services import db
+from app.services import db, unkey
 
 logger = logging.getLogger(__name__)
 
@@ -204,3 +204,42 @@ async def revoke_session(raw_token: str) -> bool:
             sess.revoked_at = datetime.now(UTC)
             await s.commit()
         return True
+
+
+# ── Account deletion ────────────────────────────────────────────────────────
+
+
+async def delete_user(user_id: int) -> None:
+    """
+    Hard-delete a user and all per-user state: API keys (with Unkey revoke),
+    sessions, and magic-link tokens. The append-only `checks` table is left
+    intact — domain-only rows have no PII and feed the auto-blocklist
+    pipeline. The Polar customer record (if any) also remains for accounting
+    and refund history.
+
+    Unkey revokes are best-effort: a failure on Unkey's side logs but does
+    not block account deletion. Worst case a key remains live in Unkey but
+    can never authenticate against us (the local row is gone).
+    """
+    async with db.get_session() as s:
+        rows = (await s.execute(
+            select(db.ApiKey.unkey_key_id).where(db.ApiKey.user_id == user_id)
+        )).scalars().all()
+    for unkey_key_id in rows:
+        if not unkey_key_id:
+            continue
+        try:
+            await unkey.revoke_key(unkey_key_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Unkey revoke failed during account deletion (user=%s, key=%s): %s",
+                user_id, unkey_key_id, exc,
+            )
+
+    async with db.get_session() as s:
+        await s.execute(sa_delete(db.ApiKey).where(db.ApiKey.user_id == user_id))
+        await s.execute(sa_delete(db.UserSession).where(db.UserSession.user_id == user_id))
+        await s.execute(sa_delete(db.MagicLinkToken).where(db.MagicLinkToken.user_id == user_id))
+        await s.execute(sa_delete(db.User).where(db.User.id == user_id))
+        await s.commit()
+    logger.info("Deleted user %s and associated keys/sessions/tokens", user_id)

@@ -215,3 +215,13 @@ async def logout(current: CurrentUser, request: Request) -> AckResponse:
 async def me(current: CurrentUser) -> UserResponse:
     """Return the current user. Used by the Next app on hydration."""
     return _user_payload(current)
+
+
+@router.delete("/me", status_code=204)
+async def delete_me(current: CurrentUser) -> None:
+    """
+    Hard-delete the caller's account: API keys (Unkey + local), sessions,
+    pending magic-link tokens, and the user row. Append-only check history
+    (domain-only, no PII) and the Polar customer record both remain.
+    """
+    await auth.delete_user(current.id)
