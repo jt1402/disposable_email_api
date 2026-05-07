@@ -19,7 +19,7 @@ from app.services.redis_client import get_redis
 
 router = APIRouter(prefix="/lists", tags=["lists"])
 
-_KIND_PATTERN = r"^(allow|block)$"
+_KIND_PATTERN = r"^(allow|block|reviewed)$"
 
 
 class ListResponse(BaseModel):

@@ -15,10 +15,21 @@ from app.services.redis_client import RedisClient
 
 ALLOW = "allow"
 BLOCK = "block"
-_ALLOWED_KINDS: frozenset[str] = frozenset({ALLOW, BLOCK})
+REVIEWED = "reviewed"
+_ALLOWED_KINDS: frozenset[str] = frozenset({ALLOW, BLOCK, REVIEWED})
+
+# Verdict-altering kinds — only allow/block change the engine's verdict.
+# `reviewed` is a UI-only "I've decided about this domain, hide from the
+# pending queue" marker.
+_VERDICT_KINDS: frozenset[str] = frozenset({ALLOW, BLOCK})
 
 
 def _key(kind: str, user_id: int) -> str:
+    if kind == REVIEWED:
+        # Reviewed keys live under their own namespace — they don't change
+        # any verdict, so keeping them off the `custom:*` prefix avoids
+        # accidental dispatch into the engine's lookup path.
+        return f"reviewed:{user_id}"
     return f"custom:{kind}:{user_id}"
 
 
@@ -58,7 +69,8 @@ async def lookup(redis: RedisClient, user_id: int, domain: str) -> str | None:
     """
     Return 'allow', 'block', or None depending on which list the domain hits.
     Allow takes precedence so users can carve trusted domains out of an
-    otherwise-blocked range.
+    otherwise-blocked range. Reviewed-only domains do not change the verdict
+    and are intentionally not consulted here.
     """
     d = _normalize(domain)
     if not d:

@@ -8,7 +8,9 @@ matches. If the user has no keys, responses are empty (not an error).
 
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Query
+import json
+
+from fastapi import APIRouter, HTTPException, Path, Query
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
 
@@ -337,3 +339,137 @@ async def domains(
     # lives in Redis. For typical sizes (< few hundred custom entries) this is
     # fine; if it becomes a hot path we can pre-filter the SQL with a CTE.
     return DomainsResponse(items=items, total=int(total_count))
+
+
+# ── Per-domain drawer (history + aggregate + most-recent signals) ───────────
+
+class HistoryRow(BaseModel):
+    checked_at: str
+    recommendation: str
+    risk_score: int
+    risk_level: str | None
+    confidence_level: str | None
+    disposable: bool | None
+    latency_ms: int
+    cached: bool
+    path_taken: str
+
+
+class SignalEntry(BaseModel):
+    name: str
+    direction: str
+    weight: int
+    description: str
+
+
+class DomainHistoryResponse(BaseModel):
+    domain: str
+    history: list[HistoryRow]
+    aggregate: DomainBreakdown
+    total: int
+    in_allow_list: bool
+    in_block_list: bool
+    is_reviewed: bool
+    # Last verdict's signals — read from the per-domain Redis cache. Best
+    # source we have for "why did this fire" without persisting signals
+    # alongside every check row.
+    last_signals_fired: list[SignalEntry]
+    last_signals_trust: list[SignalEntry]
+
+
+@router.get("/domains/{domain}/history", response_model=DomainHistoryResponse)
+async def domain_history(
+    current: CurrentUser,
+    domain: str = Path(..., max_length=255),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> DomainHistoryResponse:
+    """
+    History + aggregate + last-verdict signals for one domain. Powers the
+    drawer on the Domain Activity page.
+    """
+    domain = domain.strip().lower()
+    if not domain:
+        raise HTTPException(status_code=422, detail={"code": "invalid_domain", "message": "Empty domain."})
+
+    key_ids = await _key_ids_for_user(current.id)
+
+    async with db.get_session() as s:
+        history_stmt = (
+            select(db.Check)
+            .where(db.Check.api_key_id.in_(key_ids))
+            .where(db.Check.domain == domain)
+            .order_by(db.Check.checked_at.desc())
+            .limit(limit)
+        )
+        history_rows = (await s.execute(history_stmt)).scalars().all()
+
+        agg_stmt = (
+            select(
+                func.count().label("total"),
+                func.sum(case((db.Check.recommendation == "block", 1), else_=0)).label("blocks"),
+                func.sum(case((db.Check.recommendation == "verify_manually", 1), else_=0)).label("vm"),
+                func.sum(case((db.Check.recommendation == "allow_with_flag", 1), else_=0)).label("awf"),
+                func.sum(case((db.Check.recommendation == "allow", 1), else_=0)).label("allows"),
+            )
+            .where(db.Check.api_key_id.in_(key_ids))
+            .where(db.Check.domain == domain)
+        )
+        agg_row = (await s.execute(agg_stmt)).one()
+
+    redis = get_redis()
+    in_allow = await redis.sismember(f"custom:allow:{current.id}", domain)
+    in_block = await redis.sismember(f"custom:block:{current.id}", domain)
+    is_reviewed = await redis.sismember(f"reviewed:{current.id}", domain)
+
+    fired: list[SignalEntry] = []
+    trust: list[SignalEntry] = []
+    cached_raw = await redis.get(f"result:v2:{domain}")
+    if cached_raw:
+        try:
+            data = json.loads(cached_raw)
+            for s_obj in data.get("signals", {}).get("fired", []):
+                fired.append(SignalEntry(
+                    name=s_obj.get("name", ""),
+                    direction=s_obj.get("direction", "risk"),
+                    weight=int(s_obj.get("weight", 0)),
+                    description=s_obj.get("description", ""),
+                ))
+            for s_obj in data.get("signals", {}).get("trust_signals", []):
+                trust.append(SignalEntry(
+                    name=s_obj.get("name", ""),
+                    direction=s_obj.get("direction", "trust"),
+                    weight=int(s_obj.get("weight", 0)),
+                    description=s_obj.get("description", ""),
+                ))
+        except (ValueError, TypeError):
+            pass
+
+    return DomainHistoryResponse(
+        domain=domain,
+        history=[
+            HistoryRow(
+                checked_at=r.checked_at.isoformat(),
+                recommendation=r.recommendation,
+                risk_score=r.risk_score,
+                risk_level=r.risk_level,
+                confidence_level=r.confidence_level,
+                disposable=r.disposable,
+                latency_ms=r.latency_ms,
+                cached=r.cached,
+                path_taken=r.path_taken,
+            )
+            for r in history_rows
+        ],
+        aggregate=DomainBreakdown(
+            blocks=int(agg_row.blocks or 0),
+            verify_manually=int(agg_row.vm or 0),
+            allow_with_flag=int(agg_row.awf or 0),
+            allows=int(agg_row.allows or 0),
+        ),
+        total=int(agg_row.total or 0),
+        in_allow_list=in_allow,
+        in_block_list=in_block,
+        is_reviewed=is_reviewed,
+        last_signals_fired=fired,
+        last_signals_trust=trust,
+    )
