@@ -110,6 +110,13 @@ def _promote_compound_signals(signal_names: list[str]) -> list[str]:
         s = [x for x in s if x != "catch_all_domain" and x not in new_domain_age_signals]
         s.append("catch_all_new_domain")
 
+    # Unusual chars + known-legitimate provider = address provably cannot exist.
+    # The provider's signup form rejects these chars, so a delivery is impossible
+    # — promote to a strong signal that overcomes the provider's trust adjustments.
+    if "unusual_local_chars" in s and "known_legitimate_provider" in s:
+        s = [x for x in s if x != "unusual_local_chars"]
+        s.append("impossible_address_on_legit_provider")
+
     # Belt-and-braces against homograph + age-trust exploit: any age-based
     # trust / new-domain signal accompanying a homograph detection is
     # automatically suspect — the WHOIS lookup may have resolved against
@@ -148,6 +155,8 @@ _LOCAL_PART_SIGNALS: frozenset[str] = frozenset({
     "non_standard_local",
     "role_based_address",
     "random_local_part_pattern",
+    "unusual_local_chars",
+    "impossible_address_on_legit_provider",
 })
 
 

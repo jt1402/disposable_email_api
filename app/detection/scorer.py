@@ -157,6 +157,18 @@ SIGNAL_REGISTRY: dict[str, SignalDef] = {
         "no separators, mixed letters and digits. Common bot bypass on legitimate "
         "providers (e.g. q9zk3v7x2m@gmail.com).",
     ),
+    "unusual_local_chars": SignalDef(
+        "unusual_local_chars", TIER_CORROBORATING, CATEGORY_SYNTAX, 18,
+        "Local part contains RFC-5321-valid but vanishingly rare characters "
+        "(!, #, $, %, &, ', *, /, =, ?, ^, `, {, |, }, ~). Real email clients "
+        "almost never produce these — strong bot / test-data indicator.",
+    ),
+    "impossible_address_on_legit_provider": SignalDef(
+        "impossible_address_on_legit_provider", TIER_STRONG, CATEGORY_SYNTAX, 85,
+        "Local part uses characters that the major providers (Gmail, Outlook, "
+        "Yahoo, iCloud, Proton) explicitly disallow at signup. The address "
+        "provably cannot exist on this domain.",
+    ),
     "custom_allowlist_match": SignalDef(
         "custom_allowlist_match", TIER_TRUST, CATEGORY_SYNTAX, -100,
         "Domain is on the customer's custom allowlist — verdict forced to allow.",

@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 # RFC 5321 local part: printable ASCII minus special chars that need quoting
 _LOCAL_SAFE_CHARS = re.compile(r'^[a-zA-Z0-9!#$%&\'*+/=?^_`{|}~-]+$')
 
+# RFC 5321 allows these but real email clients essentially never produce them.
+# Used as a strong bot / test-data indicator. Notably excludes the four chars
+# that ARE common in real emails: + (filters), _ - . (separators).
+_UNUSUAL_LOCAL_CHARS: frozenset[str] = frozenset("!#$%&'*/=?^`{|}~")
+
 # Labels in the domain part
 _DOMAIN_LABEL = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$')
 
@@ -185,6 +190,10 @@ def validate(email: str) -> SyntaxResult:
     # ── 8b. Random-looking local part (bot bypass on legit providers) ─────────
     if _looks_random_local(local):
         signals.append("random_local_part_pattern")
+
+    # ── 8c. Unusual RFC-valid chars in local part (!#$%&'*/=?^`{|}~) ─────────
+    if any(c in _UNUSUAL_LOCAL_CHARS for c in local):
+        signals.append("unusual_local_chars")
 
     # ── 9. Domain: must have at least one dot ─────────────────────────────────
     if "." not in domain:
