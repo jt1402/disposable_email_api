@@ -59,6 +59,27 @@ class CheckRequest(BaseModel):
     email: str = Field(..., max_length=254, description="Email address to check")
 
 
+class BulkCheckRequest(BaseModel):
+    emails: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Email addresses to check (1–100 per request)",
+    )
+
+
+class BulkSummary(BaseModel):
+    total: int
+    credits_charged: int
+    credits_remaining: int
+    elapsed_ms: int
+
+
+class BulkCheckResponse(BaseModel):
+    items: list["CheckResponse"]
+    summary: BulkSummary
+
+
 # ── Meta block ────────────────────────────────────────────────────────────────
 
 class Meta(BaseModel):
@@ -218,3 +239,7 @@ class ReportResponse(BaseModel):
     )
     report_id: str = Field("", description="Include in support tickets about this report.")
     message: str
+
+
+# Resolve forward reference now that CheckResponse is defined.
+BulkCheckResponse.model_rebuild()

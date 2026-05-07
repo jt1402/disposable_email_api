@@ -26,6 +26,13 @@ _DECREMENT_SQL = text(
     "RETURNING credit_balance_checks"
 )
 
+_DECREMENT_N_SQL = text(
+    "UPDATE users "
+    "SET credit_balance_checks = credit_balance_checks - :n "
+    "WHERE id = :uid AND credit_balance_checks >= :n "
+    "RETURNING credit_balance_checks"
+)
+
 
 async def _try_decrement(user_id: int) -> int | None:
     async with db.get_session() as s:
@@ -45,6 +52,21 @@ async def try_charge(user_id: int) -> tuple[bool, int]:
     if new_balance is None:
         return False, 0
     return True, new_balance
+
+
+async def try_charge_n(user_id: int, n: int) -> tuple[bool, int]:
+    """
+    Atomically charge N checks. All-or-nothing: if balance < N, no debit.
+    Used by /v1/check/bulk so we don't half-charge a customer.
+    """
+    if n <= 0:
+        return True, await get_balance(user_id)
+    async with db.get_session() as s:
+        row = (await s.execute(_DECREMENT_N_SQL, {"uid": user_id, "n": n})).first()
+        await s.commit()
+    if row is None:
+        return False, 0
+    return True, int(row[0])
 
 
 async def get_balance(user_id: int) -> int:

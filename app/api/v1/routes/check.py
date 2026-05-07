@@ -1,6 +1,7 @@
 """
 GET /v1/check?email=user@example.com
 POST /v1/check  {"email": "user@example.com"}
+POST /v1/check/bulk  {"emails": [...]}   (1-100 per request)
 
 Headers:
   X-API-Key: required — your API key
@@ -10,18 +11,31 @@ Headers:
 Returns the 5-block CheckResponse (meta / verdict / score / signals / checks).
 """
 
+import asyncio
 import logging
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from app.api.v1.deps import CurrentUser, require_api_key
 from app.detection import engine
-from app.models.check import CheckRequest, CheckResponse
+from app.models.check import (
+    BulkCheckRequest,
+    BulkCheckResponse,
+    BulkSummary,
+    CheckRequest,
+    CheckResponse,
+)
 from app.models.errors import invalid_email_param_error, quota_exceeded_error
 from app.services import credits
 from app.services.redis_client import get_redis
 from app.services.unkey import VerifyResult
+
+# Cap concurrent engine tasks per bulk request — protects DNS/SMTP infrastructure
+# while still cutting wall time vs serial. 10 is a safe default with our
+# resolver pool.
+_BULK_CONCURRENCY = 10
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +77,25 @@ async def _charge_or_402(auth: VerifyResult) -> None:
         raise HTTPException(status_code=402, detail=quota_exceeded_error().model_dump())
 
 
+async def _charge_n_or_402(auth: VerifyResult, n: int) -> int:
+    """
+    Atomically charge N credits or raise 402. Returns the new balance.
+    Dev-mode + non-numeric owner_id skip charging (mirrors single-charge path).
+    """
+    if auth.owner_id == "dev":
+        return 0
+    if not auth.owner_id.isdigit():
+        logger.warning(
+            "Skipping bulk credit charge: owner_id=%r is not numeric (key=%s).",
+            auth.owner_id, auth.key_id,
+        )
+        return 0
+    charged, balance = await credits.try_charge_n(int(auth.owner_id), n)
+    if not charged:
+        raise HTTPException(status_code=402, detail=quota_exceeded_error().model_dump())
+    return balance
+
+
 @router.get("/check", response_model=CheckResponse, summary="Check an email address")
 async def check_get(
     request: Request,
@@ -97,6 +130,63 @@ async def check_post(
         api_key_id=auth.key_id,
         risk_profile_header=_profile_override(x_risk_profile, auth),
         request_id=_request_id(request),
+    )
+
+
+@router.post(
+    "/check/bulk",
+    response_model=BulkCheckResponse,
+    summary="Check multiple email addresses (1-100 per request)",
+)
+async def check_bulk(
+    request: Request,
+    body: BulkCheckRequest,
+    x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
+    auth: VerifyResult = Depends(require_api_key),
+) -> BulkCheckResponse:
+    """
+    Bulk verification path. Charges N credits up front (all-or-nothing —
+    if balance < N, the request 402s without partial debit). Internally
+    runs the same engine path per email with a concurrency cap so a 100-row
+    batch finishes in roughly 10× a single check rather than 100×.
+
+    Each item in `items` is a full CheckResponse, in the same order as the
+    input. Invalid syntax produces a CheckResponse with recommendation=block,
+    not an error — bulk never fails individual rows separately.
+    """
+    t_start = time.monotonic()
+    n = len(body.emails)
+    new_balance = await _charge_n_or_402(auth, n)
+
+    redis = get_redis()
+    profile = _profile_override(x_risk_profile, auth)
+    request_id_prefix = _request_id(request)
+    sem = asyncio.Semaphore(_BULK_CONCURRENCY)
+
+    async def _one(idx: int, email: str) -> CheckResponse:
+        async with sem:
+            return await engine.check(
+                email, redis,
+                api_key_id=auth.key_id,
+                risk_profile_header=profile,
+                # Distinct request_id per row keeps audit/log lookups clean.
+                request_id=f"{request_id_prefix}.{idx}" if request_id_prefix else "",
+            )
+
+    results = await asyncio.gather(
+        *(_one(i, e) for i, e in enumerate(body.emails)),
+        return_exceptions=False,
+    )
+
+    elapsed_ms = int((time.monotonic() - t_start) * 1000)
+    return BulkCheckResponse(
+        items=results,
+        summary=BulkSummary(
+            total=n,
+            credits_charged=n if auth.owner_id.isdigit() else 0,
+            credits_remaining=new_balance,
+            elapsed_ms=elapsed_ms,
+        ),
     )
 
 
