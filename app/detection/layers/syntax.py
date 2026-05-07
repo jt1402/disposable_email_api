@@ -5,8 +5,10 @@ Pure in-memory checks. No I/O. Run before anything touches Redis or the network.
 Catches: malformed addresses, consecutive dots, unicode homographs, length violations.
 """
 
+import math
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 
 # RFC 5321 local part: printable ASCII minus special chars that need quoting
@@ -56,6 +58,51 @@ def _looks_generated(sld: str) -> bool:
     if _NO_VOWELS.match(cleaned):
         return True
     return False
+
+
+_LOCAL_RANDOM_MIN_LEN = 10
+_LOCAL_RANDOM_VOWEL_MAX = 0.25
+_LOCAL_RANDOM_ENTROPY_MIN = 3.0
+
+
+def _shannon_entropy(s: str) -> float:
+    if not s:
+        return 0.0
+    counts = Counter(s)
+    n = len(s)
+    return -sum((c / n) * math.log2(c / n) for c in counts.values())
+
+
+def _looks_random_local(local: str) -> bool:
+    """
+    Heuristic for bot-generated local parts on legitimate providers
+    (e.g. q9zk3v7x2m@gmail.com). Three gates, all required:
+
+      1. length >= 10               — short locals are normal (john, info)
+      2. no separators (.+_-)       — words and firstname.lastname forms exit
+      3. mixed letters AND digits   — pure-letter or pure-digit locals exit
+      4. low vowel ratio + entropy  — distinguishes random from concat'd words
+
+    Tuned to keep false-positive rate near zero on common legit patterns
+    while still flagging the obvious random-string bypass.
+    """
+    if len(local) < _LOCAL_RANDOM_MIN_LEN:
+        return False
+    if any(c in local for c in ".+_-"):
+        return False
+    s = local.lower()
+    has_letter = any(c.isalpha() for c in s)
+    has_digit = any(c.isdigit() for c in s)
+    if not (has_letter and has_digit):
+        return False
+    letters = [c for c in s if c.isalpha()]
+    if not letters:
+        return False
+    vowels = sum(1 for c in letters if c in "aeiouy")
+    vowel_ratio = vowels / len(letters)
+    if vowel_ratio >= _LOCAL_RANDOM_VOWEL_MAX:
+        return False
+    return _shannon_entropy(s) >= _LOCAL_RANDOM_ENTROPY_MIN
 
 
 @dataclass
@@ -115,6 +162,10 @@ def validate(email: str) -> SyntaxResult:
     }
     if local.lower() in ROLE_PREFIXES or local.lower().split("+")[0] in ROLE_PREFIXES:
         signals.append("role_based_address")
+
+    # ── 8b. Random-looking local part (bot bypass on legit providers) ─────────
+    if _looks_random_local(local):
+        signals.append("random_local_part_pattern")
 
     # ── 9. Domain: must have at least one dot ─────────────────────────────────
     if "." not in domain:

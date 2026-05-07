@@ -151,6 +151,12 @@ SIGNAL_REGISTRY: dict[str, SignalDef] = {
         "Domain name matches a machine-generated or algorithmic pattern "
         "(long digit runs, random-looking character sequences, or hash-like names).",
     ),
+    "random_local_part_pattern": SignalDef(
+        "random_local_part_pattern", TIER_CORROBORATING, CATEGORY_SYNTAX, 25,
+        "Local part looks machine-generated — high Shannon entropy, low vowel ratio, "
+        "no separators, mixed letters and digits. Common bot bypass on legitimate "
+        "providers (e.g. q9zk3v7x2m@gmail.com).",
+    ),
     "bulk_registrar": SignalDef(
         "bulk_registrar", TIER_CORROBORATING, CATEGORY_INFRASTRUCTURE, 15,
         "Domain was registered through a bulk / cheap-tier registrar frequently "
