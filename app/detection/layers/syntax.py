@@ -11,8 +11,9 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 
-# RFC 5321 local part: printable ASCII minus special chars that need quoting
-_LOCAL_SAFE_CHARS = re.compile(r'^[a-zA-Z0-9!#$%&\'*+/=?^_`{|}~-]+$')
+# RFC 5321 local part: atext + dot (dot-string form). Dot rules (no leading,
+# trailing, or doubled dots) are validated separately further down.
+_LOCAL_SAFE_CHARS = re.compile(r'^[a-zA-Z0-9!#$%&\'*+/=?^_`{|}~.-]+$')
 
 # RFC 5321 allows these but real email clients essentially never produce them.
 # Used as a strong bot / test-data indicator. Notably excludes the four chars
@@ -227,7 +228,11 @@ def validate(email: str) -> SyntaxResult:
         return SyntaxResult(valid=False, signals=["invalid_syntax"])
 
     tld = labels[-1]
-    if len(tld) < 2 or not tld.isalpha():
+    # IDN TLDs (xn--p1ai for .рф, xn--fiqs8s for .中国, etc.) start with `xn--`
+    # and contain digits — they fail .isalpha() but are valid TLDs. Accept
+    # either pure-alpha labels or punycode-encoded ones.
+    is_punycode_tld = tld.startswith("xn--") and len(tld) > 4
+    if len(tld) < 2 or (not tld.isalpha() and not is_punycode_tld):
         return SyntaxResult(valid=False, signals=["invalid_syntax"])
 
     for label in labels[:-1]:
