@@ -342,6 +342,15 @@ def thresholds_for(profile: RiskProfile, phase: ModelPhase) -> ProfileThresholds
 
 # ── Recommendation logic ──────────────────────────────────────────────────────
 
+_FORCE_VERIFY_SIGNALS: frozenset[str] = frozenset({
+    # Address looks impossible on this provider, but the rule is provider
+    # policy (not RFC) so we don't auto-block — flip to verify_manually and
+    # let the customer decide. Surfaces at any score; trust signals can't
+    # override it.
+    "impossible_address_on_legit_provider",
+})
+
+
 def derive_recommendation(
     score: int,
     confidence: float,
@@ -350,7 +359,21 @@ def derive_recommendation(
 ) -> Recommendation:
     """
     Score AND confidence matter. High score + low confidence never auto-blocks.
+
+    Some signals (see _FORCE_VERIFY_SIGNALS) bypass the score math entirely
+    and force a verify_manually outcome — they encode third-party rules we
+    can't fully verify, so we route the call to the customer instead of
+    making it ourselves.
     """
+    # Force-review signals win over the score math, but never auto-block —
+    # they reflect probable, not provable, impossibility.
+    if any(s in _FORCE_VERIFY_SIGNALS for s in fired_signal_names):
+        # If the score also crosses block AND confidence is high, defer to
+        # the regular block path — that case has independent evidence.
+        if score >= thresholds.block and confidence >= thresholds.confidence_gate:
+            return Recommendation.BLOCK
+        return Recommendation.VERIFY_MANUALLY
+
     # High score path
     if score >= thresholds.block:
         if confidence >= thresholds.confidence_gate:
@@ -409,6 +432,13 @@ def build_summary(
 
     if "known_disposable_domain_high_confidence" in fired or "known_disposable_domain" in fired:
         return "Domain is a confirmed disposable email provider."
+
+    if "impossible_address_on_legit_provider" in fired:
+        return (
+            "Local part uses characters that this provider's signup form "
+            "does not accept — the address most likely cannot exist. "
+            "Recommend manual verification before delivering."
+        )
 
     parts: list[str] = []
     if domain_age_days is not None and domain_age_days < 30:
