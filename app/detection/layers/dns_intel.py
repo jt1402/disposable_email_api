@@ -14,9 +14,10 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import UTC
+from datetime import UTC, datetime
 
 import aiodns
+import httpx
 
 from app.core.config import get_settings
 from app.services.redis_client import RedisClient
@@ -196,8 +197,43 @@ async def _check_dkim_common_selectors(domain: str, timeout: float) -> bool | No
     return None  # Inconclusive — absence does not prove no DKIM
 
 
-async def _get_domain_age_days(domain: str, timeout: float) -> int | None:
-    from datetime import datetime
+# rdap.org acts as a thin meta-resolver across all TLD-specific RDAP servers,
+# so we don't have to maintain the IANA bootstrap file ourselves. Falls back
+# to WHOIS for the handful of ccTLDs that still lack RDAP coverage.
+_RDAP_BASE = "https://rdap.org/domain/"
+
+
+async def _get_domain_age_via_rdap(domain: str, timeout: float) -> int | None:
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            r = await client.get(f"{_RDAP_BASE}{domain}")
+        if r.status_code == 404:
+            return None
+        if r.status_code >= 400:
+            logger.debug("RDAP %s for %s", r.status_code, domain)
+            return None
+        data = r.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.debug("RDAP failed for %s: %s", domain, exc)
+        return None
+
+    for event in data.get("events", []):
+        if event.get("eventAction") == "registration":
+            date_str = event.get("eventDate")
+            if not isinstance(date_str, str):
+                return None
+            try:
+                creation = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            if creation.tzinfo is None:
+                creation = creation.replace(tzinfo=UTC)
+            now = datetime.now(UTC)
+            return max(0, (now - creation).days)
+    return None
+
+
+async def _get_domain_age_via_whois(domain: str, timeout: float) -> int | None:
     try:
         import whois  # type: ignore[import-untyped]
         w = await asyncio.wait_for(asyncio.to_thread(whois.whois, domain), timeout=timeout)
@@ -216,6 +252,18 @@ async def _get_domain_age_days(domain: str, timeout: float) -> int | None:
     except Exception as exc:
         logger.debug("WHOIS failed for %s: %s", domain, exc)
         return None
+
+
+async def _get_domain_age_days(domain: str, timeout: float) -> int | None:
+    """
+    Domain age in days. Tries RDAP first (faster, structured JSON, IANA-blessed)
+    and falls back to WHOIS for ccTLDs that haven't migrated yet (.tk, some
+    older registries). Both share the same outer timeout budget.
+    """
+    age = await _get_domain_age_via_rdap(domain, timeout)
+    if age is not None:
+        return age
+    return await _get_domain_age_via_whois(domain, timeout)
 
 
 def _is_legitimate_mx(mx_host: str) -> bool:
