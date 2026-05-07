@@ -213,9 +213,16 @@ class DomainRow(BaseModel):
     in_block_list: bool
 
 
+class DomainsCounts(BaseModel):
+    need_review: int
+    blocked: int
+    trusted: int
+
+
 class DomainsResponse(BaseModel):
     items: list[DomainRow]
     total: int
+    counts: DomainsCounts
 
 
 _REC_VALUES = ("allow", "allow_with_flag", "verify_manually", "block")
@@ -335,10 +342,53 @@ async def domains(
             in_block_list=in_block,
         ))
 
+    # Counts for the page header pills. need_review = domains whose latest
+    # verdict is verify_manually, scoped to the same window, excluding any
+    # domain already on a custom list or marked reviewed.
+    reviewed_set = set(await custom_lists.list_domains(redis, current.id, custom_lists.REVIEWED))
+    async with db.get_session() as s:
+        nr_stmt = (
+            select(func.count())
+            .select_from(
+                select(latest_per_domain)
+                .where(latest_per_domain.c.rn == 1)
+                .where(latest_per_domain.c.recommendation == "verify_manually")
+                .subquery()
+            )
+        )
+        # Subtract reviewed/allow/block domains from the verify_manually count.
+        # Cheap because the overlap sets are small.
+        vm_total = (await s.execute(nr_stmt)).scalar_one() or 0
+    excluded = reviewed_set | allow_set | block_set
+    if excluded:
+        vm_excl_stmt = (
+            select(func.count())
+            .select_from(
+                select(latest_per_domain)
+                .where(latest_per_domain.c.rn == 1)
+                .where(latest_per_domain.c.recommendation == "verify_manually")
+                .where(latest_per_domain.c.domain.in_(excluded))
+                .subquery()
+            )
+        )
+        async with db.get_session() as s:
+            vm_overlap = (await s.execute(vm_excl_stmt)).scalar_one() or 0
+        need_review = max(0, int(vm_total) - int(vm_overlap))
+    else:
+        need_review = int(vm_total)
+
     # Note: the `in_list` filter is applied post-query because list membership
     # lives in Redis. For typical sizes (< few hundred custom entries) this is
     # fine; if it becomes a hot path we can pre-filter the SQL with a CTE.
-    return DomainsResponse(items=items, total=int(total_count))
+    return DomainsResponse(
+        items=items,
+        total=int(total_count),
+        counts=DomainsCounts(
+            need_review=need_review,
+            blocked=len(block_set),
+            trusted=len(allow_set),
+        ),
+    )
 
 
 # ── Per-domain drawer (history + aggregate + most-recent signals) ───────────
