@@ -61,8 +61,10 @@ def _looks_generated(sld: str) -> bool:
 
 
 _LOCAL_RANDOM_MIN_LEN = 10
+_LOCAL_RANDOM_LONG_LEN = 12
 _LOCAL_RANDOM_VOWEL_MAX = 0.25
 _LOCAL_RANDOM_ENTROPY_MIN = 3.0
+_LOCAL_RANDOM_LOW_ENTROPY_MAX = 2.5
 
 
 def _shannon_entropy(s: str) -> float:
@@ -75,16 +77,22 @@ def _shannon_entropy(s: str) -> float:
 
 def _looks_random_local(local: str) -> bool:
     """
-    Heuristic for bot-generated local parts on legitimate providers
-    (e.g. q9zk3v7x2m@gmail.com). Three gates, all required:
+    Heuristic for bot-generated local parts on legitimate providers.
 
-      1. length >= 10               — short locals are normal (john, info)
-      2. no separators (.+_-)       — words and firstname.lastname forms exit
-      3. mixed letters AND digits   — pure-letter or pure-digit locals exit
-      4. low vowel ratio + entropy  — distinguishes random from concat'd words
+    Two firing paths — both require length >= 10 and no separators (.+_-),
+    so word-like and firstname.lastname forms exit early:
 
-    Tuned to keep false-positive rate near zero on common legit patterns
-    while still flagging the obvious random-string bypass.
+      Path A — high-entropy alphanumeric mash (e.g. q9zk3v7x2m@gmail.com)
+        mixed letters + digits, vowel ratio < 0.25, Shannon entropy >= 3.0
+
+      Path B — low-entropy keyboard mash / repeated pattern
+        (e.g. fdasfasdfasdfasdf@gmail.com, asdfasdfasdfasdf@gmail.com)
+        length >= 12 and Shannon entropy < 2.5 — the repetition itself is
+        the giveaway. Real concatenated names ("christophersmith") have
+        entropy ~3.3+ so they don't trip this path.
+
+    Tuned to keep the false-positive rate near zero on common legit
+    patterns while flagging both bypass styles.
     """
     if len(local) < _LOCAL_RANDOM_MIN_LEN:
         return False
@@ -92,17 +100,28 @@ def _looks_random_local(local: str) -> bool:
         return False
     s = local.lower()
     has_letter = any(c.isalpha() for c in s)
-    has_digit = any(c.isdigit() for c in s)
-    if not (has_letter and has_digit):
+    if not has_letter:
         return False
+
+    entropy = _shannon_entropy(s)
     letters = [c for c in s if c.isalpha()]
-    if not letters:
-        return False
     vowels = sum(1 for c in letters if c in "aeiouy")
-    vowel_ratio = vowels / len(letters)
-    if vowel_ratio >= _LOCAL_RANDOM_VOWEL_MAX:
-        return False
-    return _shannon_entropy(s) >= _LOCAL_RANDOM_ENTROPY_MIN
+    vowel_ratio = vowels / len(letters) if letters else 1.0
+    has_digit = any(c.isdigit() for c in s)
+
+    # Path A — high-entropy alphanumeric (random-string bypass)
+    if (
+        has_digit
+        and vowel_ratio < _LOCAL_RANDOM_VOWEL_MAX
+        and entropy >= _LOCAL_RANDOM_ENTROPY_MIN
+    ):
+        return True
+
+    # Path B — low-entropy long string (keyboard mash / repetition)
+    if len(s) >= _LOCAL_RANDOM_LONG_LEN and entropy < _LOCAL_RANDOM_LOW_ENTROPY_MAX:
+        return True
+
+    return False
 
 
 @dataclass

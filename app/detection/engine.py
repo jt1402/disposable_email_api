@@ -140,6 +140,16 @@ _KNOWN_DISPOSABLE_SIGNALS: frozenset[str] = frozenset({
     "known_disposable_domain_high_confidence",
 })
 
+# Signals that depend on the local-part of the email rather than the domain.
+# We never serve these from the per-domain cache: doing so would let one user's
+# verdict leak across to another's email on the same domain (e.g. bot signup
+# poisoning gmail.com's cached response with random_local_part_pattern).
+_LOCAL_PART_SIGNALS: frozenset[str] = frozenset({
+    "non_standard_local",
+    "role_based_address",
+    "random_local_part_pattern",
+})
+
 
 def _is_disposable(signal_names: list[str]) -> bool:
     """
@@ -405,8 +415,13 @@ async def check(
             return response
 
     # ── Full-result cache short-circuit (fast path for known domains) ───────
+    # Skip the cache when this email has local-part signals — those depend on
+    # the local part, not the domain, so a cached verdict would either miss
+    # them (if the cache was warmed by a clean email) or leak them (if it was
+    # warmed by a sketchy one). Bot signups go full-pipeline; that's fine.
+    has_local_signal = any(s in _LOCAL_PART_SIGNALS for s in syn_signals)
     cache_key = _RESULT_CACHE_KEY.format(domain)
-    cached_raw = await redis.get(cache_key)
+    cached_raw = None if has_local_signal else await redis.get(cache_key)
     if cached_raw:
         try:
             data = json.loads(cached_raw)
@@ -628,7 +643,10 @@ async def check(
     )
     fraud_confirmed = breakdown.final_clamped >= 90 and confidence >= 0.8
     trusted = "known_legitimate_provider" in all_signal_names or "known_disposable_domain_high_confidence" in all_signal_names
-    await _cache_response(redis, cache_key, response, has_new_domain, fraud_confirmed, trusted)
+    # Don't cache responses that include local-part-derived signals — they
+    # would otherwise persist a per-email verdict against the per-domain key.
+    if not any(s in _LOCAL_PART_SIGNALS for s in all_signal_names):
+        await _cache_response(redis, cache_key, response, has_new_domain, fraud_confirmed, trusted)
 
     _record_async(api_key_id, response)
     return response
