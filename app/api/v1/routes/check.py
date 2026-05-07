@@ -21,6 +21,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from app.api.v1.deps import CurrentUser, require_api_key
 from app.detection import engine
 from app.models.check import (
+    AsyncCheckRequest,
+    AsyncCheckResponse,
     BulkCheckRequest,
     BulkCheckResponse,
     BulkSummary,
@@ -28,7 +30,7 @@ from app.models.check import (
     CheckResponse,
 )
 from app.models.errors import invalid_email_param_error, quota_exceeded_error
-from app.services import credits
+from app.services import credits, webhook_dispatch
 from app.services.redis_client import get_redis
 from app.services.unkey import VerifyResult
 
@@ -192,6 +194,90 @@ async def check_bulk(
             credits_remaining=new_balance,
             elapsed_ms=elapsed_ms,
         ),
+    )
+
+
+@router.post(
+    "/check/async",
+    response_model=AsyncCheckResponse,
+    status_code=202,
+    summary="Async deep check — preliminary verdict now, final verdict via webhook",
+)
+async def check_async(
+    request: Request,
+    body: AsyncCheckRequest,
+    x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
+    auth: VerifyResult = Depends(require_api_key),
+) -> AsyncCheckResponse:
+    """
+    Two-phase verification path. Returns 202 immediately with a preliminary
+    verdict from the fast/standard layers (no SMTP). The deep path (catch-all
+    SMTP probing + final scoring) runs in the background and POSTs the final
+    CheckResponse to your webhook URL.
+
+    Charges 1 credit at request time, regardless of webhook outcome — the
+    work is done either way. The webhook URL must be HTTPS and resolve to
+    a public IP (private/loopback addresses are rejected).
+    """
+    ok, reason = webhook_dispatch.is_safe_webhook_url(body.webhook_url)
+    if not ok:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_webhook_url", "message": f"Webhook URL rejected: {reason}"},
+        )
+
+    await _charge_or_402(auth)
+
+    redis = get_redis()
+    profile = _profile_override(x_risk_profile, auth)
+    request_id = _request_id(request) or ""
+    owner = int(auth.owner_id) if auth.owner_id.isdigit() else None
+
+    # Phase 1: synchronous standard-path check (no SMTP), fast enough to
+    # return inside the 202 response.
+    preliminary = await engine.check(
+        body.email, redis,
+        api_key_id=auth.key_id,
+        risk_profile_header=profile,
+        request_id=request_id,
+        owner_id=owner,
+    )
+
+    # Phase 2: background deep check with catch-all probe forced on,
+    # then deliver final verdict via webhook. Detached from this request.
+    async def _deep_then_deliver() -> None:
+        try:
+            final = await engine.check(
+                body.email, redis,
+                api_key_id=auth.key_id,
+                risk_profile_header=profile,
+                request_id=f"{request_id}.async" if request_id else "",
+                owner_id=owner,
+                force_catchall=True,
+            )
+            payload = {
+                "request_id": preliminary.meta.request_id,
+                "event": "check.completed",
+                "result": final.model_dump(mode="json"),
+            }
+            await webhook_dispatch.deliver(
+                body.webhook_url,
+                payload,
+                secret=body.webhook_secret,
+                request_id=preliminary.meta.request_id,
+            )
+        except Exception:
+            logger.exception("async deep check failed (request_id=%s)", preliminary.meta.request_id)
+
+    asyncio.create_task(_deep_then_deliver())
+
+    return AsyncCheckResponse(
+        request_id=preliminary.meta.request_id,
+        status="pending",
+        preliminary=preliminary,
+        webhook_url=body.webhook_url,
+        # Catch-all probe budgets ~5s + DNS overhead — round figure for UX.
+        estimated_completion_ms=6000,
     )
 
 

@@ -80,6 +80,32 @@ class BulkCheckResponse(BaseModel):
     summary: BulkSummary
 
 
+class AsyncCheckRequest(BaseModel):
+    email: str = Field(..., max_length=254)
+    webhook_url: str = Field(
+        ...,
+        max_length=2048,
+        description="HTTPS URL to POST the final verdict to. Must be public (no private IPs).",
+    )
+    webhook_secret: str | None = Field(
+        None,
+        max_length=128,
+        description="Optional shared secret. If set, payload is signed with HMAC-SHA256 "
+                    "and the digest is sent in the X-VerifyMail-Signature header.",
+    )
+
+
+class AsyncCheckResponse(BaseModel):
+    request_id: str
+    status: str = Field(description="Always 'pending' — final verdict is delivered via webhook")
+    preliminary: "CheckResponse" = Field(
+        description="Best-effort verdict from the fast/standard layers. The final "
+                    "verdict (delivered via webhook) may differ once SMTP probes complete."
+    )
+    webhook_url: str
+    estimated_completion_ms: int
+
+
 # ── Meta block ────────────────────────────────────────────────────────────────
 
 class Meta(BaseModel):
@@ -241,5 +267,6 @@ class ReportResponse(BaseModel):
     message: str
 
 
-# Resolve forward reference now that CheckResponse is defined.
+# Resolve forward references now that CheckResponse is defined.
 BulkCheckResponse.model_rebuild()
+AsyncCheckResponse.model_rebuild()

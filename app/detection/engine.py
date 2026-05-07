@@ -357,6 +357,7 @@ async def check(
     risk_profile_header: str | None = None,
     request_id: str | None = None,
     owner_id: int | None = None,
+    force_catchall: bool = False,
 ) -> CheckResponse:
     settings = get_settings()
     t_start = time.monotonic()
@@ -483,7 +484,7 @@ async def check(
     catch_all_value: bool | None = None
     catch_all_probability = 0.0
     path_taken = "standard"
-    if settings.catchall_enabled and dns_result.has_mx:
+    if (settings.catchall_enabled or force_catchall) and dns_result.has_mx:
         ca_result = await catchall.check(domain, dns_result.mx_hosts, redis, settings.smtp_timeout)
         all_signal_names += ca_result.signals
         confidence_penalties += ca_result.confidence_penalties
@@ -495,7 +496,7 @@ async def check(
                 "result": c.result, "probe_detail": c.probe_detail,
             })
         path_taken = "deep"
-    elif dns_result.has_mx and not settings.catchall_enabled:
+    elif dns_result.has_mx and not (settings.catchall_enabled or force_catchall):
         confidence_penalties.append("catchall_skipped")
 
     # ── Special case: old-established catch-all is a trust signal ───────────
