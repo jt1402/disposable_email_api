@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.v1.routes import auth, billing, check, health, keys, oauth, report, usage, webhooks
+from app.api.v1.routes import auth, billing, check, health, keys, lists, oauth, report, usage, webhooks
 from app.core.config import get_settings
 from app.models.errors import ErrorDetail, internal_error, validation_error
 from app.services import db as database
@@ -89,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(keys.router, prefix="/v1")
     app.include_router(usage.router, prefix="/v1")
     app.include_router(billing.router, prefix="/v1")
+    app.include_router(lists.router, prefix="/v1")
     # webhooks router declares its own /v1/webhooks/* paths.
     app.include_router(webhooks.router)
 

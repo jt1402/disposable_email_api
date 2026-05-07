@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from app.core.config import get_settings
 from app.detection import scorer
 from app.detection.layers import behavioral, blocklist, catchall, dns_intel, syntax
-from app.services import recorder
+from app.services import custom_lists, recorder
 from app.models.check import (
     CatchAllDetail,
     Check,
@@ -258,12 +258,105 @@ def _build_hard_disqualifier_response(
     )
 
 
+def _build_custom_list_response(
+    request_id: str,
+    email: str,
+    domain: str,
+    kind: str,
+    t_start: float,
+    profile: RiskProfile,
+    phase: ModelPhase,
+    settings,
+) -> CheckResponse:
+    """
+    Short-circuit response when the caller's custom allow/block list
+    matches the domain. Bypasses every detection layer — no DNS, no WHOIS,
+    no SMTP — for a deterministic verdict in <2ms.
+    """
+    elapsed = int((time.monotonic() - t_start) * 1000)
+    th = scorer.thresholds_for(profile, phase)
+
+    if kind == custom_lists.ALLOW:
+        signal_name = "custom_allowlist_match"
+        rec = scorer.Recommendation.ALLOW
+        rlvl = scorer.RiskLevel.LOW
+        score_value = 0
+        safe = True
+        summary_text = "Domain is on your custom allowlist — verdict forced to allow."
+    else:
+        signal_name = "custom_blocklist_match"
+        rec = scorer.Recommendation.BLOCK
+        rlvl = scorer.RiskLevel.CRITICAL
+        score_value = 100
+        safe = False
+        summary_text = "Domain is on your custom blocklist — verdict forced to block."
+
+    fired, trust = _signals_to_objects([signal_name])
+
+    return CheckResponse(
+        meta=Meta(
+            request_id=request_id,
+            email=email,
+            domain=domain,
+            checked_at=_now_iso(),
+            latency_ms=elapsed,
+            model_phase=phase,
+            model_version=settings.model_version,
+            path_taken="custom_list",
+            cached=False,
+        ),
+        verdict=Verdict(
+            recommendation=rec,
+            risk_level=rlvl,
+            disposable=False,
+            catch_all=None,
+            catch_all_checked=False,
+            valid_address=True,
+            safe_to_send=safe,
+            summary=summary_text,
+        ),
+        score=Score(
+            value=score_value,
+            confidence=1.0,
+            confidence_level=scorer.ConfidenceLevel.HIGH,
+            components=ScoreComponents(
+                strong_signals=score_value if kind == custom_lists.BLOCK else 0,
+                corroborating=0,
+                trust_adjustments=-100 if kind == custom_lists.ALLOW else 0,
+                compounding_bonus=0,
+                final_clamped=score_value,
+            ),
+            thresholds=Thresholds(
+                block_at=th.block, flag_at=th.flag, your_profile=profile,
+            ),
+        ),
+        signals=Signals(
+            fired=fired,
+            trust_signals=trust,
+            compounding=Compounding(
+                applied=False, signal_count=0, bonus_applied=0,
+                explanation="Custom list match — detection layers skipped.",
+            ),
+        ),
+        checks=Checks(
+            run=[Check(
+                name="custom_list_lookup",
+                status="passed",
+                duration_ms=elapsed,
+                result=f"{kind}list match",
+            )],
+            path_explanation=f"Custom {kind}list hit — fast-path exit, no DNS or SMTP needed.",
+        ),
+    )
+
+
 async def check(
     email: str,
     redis: RedisClient,
     api_key_id: str = "",
     risk_profile_header: str | None = None,
     request_id: str | None = None,
+    owner_id: int | None = None,
 ) -> CheckResponse:
     settings = get_settings()
     t_start = time.monotonic()
@@ -293,6 +386,22 @@ async def check(
 
     domain = syn.domain
     syn_signals: list[str] = list(syn.signals)
+
+    # ── Custom allow/block list short-circuit (per-user override) ───────────
+    # Runs before the cache so a customer's override wins over the cached
+    # global verdict. ~1ms Redis lookup; skipped entirely when no owner_id.
+    if owner_id is not None:
+        try:
+            kind = await custom_lists.lookup(redis, owner_id, domain)
+        except Exception as exc:
+            logger.debug("custom_lists.lookup failed for %s: %s", domain, exc)
+            kind = None
+        if kind is not None:
+            response = _build_custom_list_response(
+                request_id, email, domain, kind, t_start, profile, phase, settings,
+            )
+            _record_async(api_key_id, response)
+            return response
 
     # ── Full-result cache short-circuit (fast path for known domains) ───────
     cache_key = _RESULT_CACHE_KEY.format(domain)

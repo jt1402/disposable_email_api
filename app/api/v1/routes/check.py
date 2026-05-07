@@ -113,6 +113,7 @@ async def check_get(
         api_key_id=auth.key_id,
         risk_profile_header=_profile_override(x_risk_profile, auth),
         request_id=_request_id(request),
+        owner_id=int(auth.owner_id) if auth.owner_id.isdigit() else None,
     )
 
 
@@ -130,6 +131,7 @@ async def check_post(
         api_key_id=auth.key_id,
         risk_profile_header=_profile_override(x_risk_profile, auth),
         request_id=_request_id(request),
+        owner_id=int(auth.owner_id) if auth.owner_id.isdigit() else None,
     )
 
 
@@ -163,6 +165,8 @@ async def check_bulk(
     request_id_prefix = _request_id(request)
     sem = asyncio.Semaphore(_BULK_CONCURRENCY)
 
+    owner = int(auth.owner_id) if auth.owner_id.isdigit() else None
+
     async def _one(idx: int, email: str) -> CheckResponse:
         async with sem:
             return await engine.check(
@@ -171,6 +175,7 @@ async def check_bulk(
                 risk_profile_header=profile,
                 # Distinct request_id per row keeps audit/log lookups clean.
                 request_id=f"{request_id_prefix}.{idx}" if request_id_prefix else "",
+                owner_id=owner,
             )
 
     results = await asyncio.gather(
@@ -217,4 +222,5 @@ async def check_preview(
         api_key_id=f"playground:{current.id}",
         risk_profile_header=x_risk_profile,
         request_id=_request_id(request),
+        owner_id=current.id,
     )

@@ -52,6 +52,19 @@ class RedisClient:
     async def hgetall(self, key: str) -> dict[str, str]:
         return await self._client.hgetall(key)
 
+    async def sadd(self, key: str, *values: str) -> int:
+        return int(await self._client.sadd(key, *values))
+
+    async def srem(self, key: str, *values: str) -> int:
+        return int(await self._client.srem(key, *values))
+
+    async def sismember(self, key: str, value: str) -> bool:
+        return bool(await self._client.sismember(key, value))
+
+    async def smembers(self, key: str) -> list[str]:
+        result = await self._client.smembers(key)
+        return list(result) if result else []
+
     async def pfadd(self, key: str, *values: str) -> None:
         await self._client.pfadd(key, *values)
 

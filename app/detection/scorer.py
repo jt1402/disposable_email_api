@@ -157,6 +157,14 @@ SIGNAL_REGISTRY: dict[str, SignalDef] = {
         "no separators, mixed letters and digits. Common bot bypass on legitimate "
         "providers (e.g. q9zk3v7x2m@gmail.com).",
     ),
+    "custom_allowlist_match": SignalDef(
+        "custom_allowlist_match", TIER_TRUST, CATEGORY_SYNTAX, -100,
+        "Domain is on the customer's custom allowlist — verdict forced to allow.",
+    ),
+    "custom_blocklist_match": SignalDef(
+        "custom_blocklist_match", TIER_STRONG, CATEGORY_SYNTAX, 100,
+        "Domain is on the customer's custom blocklist — verdict forced to block.",
+    ),
     "bulk_registrar": SignalDef(
         "bulk_registrar", TIER_CORROBORATING, CATEGORY_INFRASTRUCTURE, 15,
         "Domain was registered through a bulk / cheap-tier registrar frequently "
