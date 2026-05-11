@@ -10,7 +10,7 @@ Not simple addition. Structure:
 Trust signals are what makes catch-all detection work correctly: a catch-all on a
 6-year-old domain with SPF+DKIM+DMARC should score LOW, not medium.
 
-Confidence separate from score: score=85 conf=0.45 → 'verify_manually', not 'block'.
+Confidence separate from score: score=85 conf=0.45 → 'allow_with_flag', not 'block'.
 """
 
 from dataclasses import dataclass, field
@@ -342,10 +342,10 @@ def thresholds_for(profile: RiskProfile, phase: ModelPhase) -> ProfileThresholds
 
 # ── Recommendation logic ──────────────────────────────────────────────────────
 
-_FORCE_VERIFY_SIGNALS: frozenset[str] = frozenset({
+_FORCE_FLAG_SIGNALS: frozenset[str] = frozenset({
     # Address looks impossible on this provider, but the rule is provider
-    # policy (not RFC) so we don't auto-block — flip to verify_manually and
-    # let the customer decide. Surfaces at any score; trust signals can't
+    # policy (not RFC) so we don't auto-block — flag for the customer's
+    # friction step (email-verification, captcha, etc.). Trust signals can't
     # override it.
     "impossible_address_on_legit_provider",
 })
@@ -358,27 +358,32 @@ def derive_recommendation(
     thresholds: ProfileThresholds,
 ) -> Recommendation:
     """
-    Score AND confidence matter. High score + low confidence never auto-blocks.
+    Three outcomes — allow / allow_with_flag / block.
 
-    Some signals (see _FORCE_VERIFY_SIGNALS) bypass the score math entirely
-    and force a verify_manually outcome — they encode third-party rules we
-    can't fully verify, so we route the call to the customer instead of
-    making it ourselves.
+    `allow_with_flag` is the safety-margin verdict for everything we suspect
+    but can't fully prove. The customer's app routes flagged users through
+    its existing verification or friction step (email confirmation, captcha,
+    extra KYC, etc.). We don't try to be the inbox.
+
+    Force-flag signals (see _FORCE_FLAG_SIGNALS) bypass the score math
+    entirely — they encode third-party rules (e.g., a provider's signup
+    policy) we can't verify, so we route the call to the customer instead
+    of making it ourselves.
     """
-    # Force-review signals win over the score math, but never auto-block —
-    # they reflect probable, not provable, impossibility.
-    if any(s in _FORCE_VERIFY_SIGNALS for s in fired_signal_names):
-        # If the score also crosses block AND confidence is high, defer to
-        # the regular block path — that case has independent evidence.
+    # Force-flag signals — never auto-block (probable, not provable).
+    if any(s in _FORCE_FLAG_SIGNALS for s in fired_signal_names):
         if score >= thresholds.block and confidence >= thresholds.confidence_gate:
             return Recommendation.BLOCK
-        return Recommendation.VERIFY_MANUALLY
+        return Recommendation.ALLOW_WITH_FLAG
 
     # High score path
     if score >= thresholds.block:
         if confidence >= thresholds.confidence_gate:
             return Recommendation.BLOCK
-        return Recommendation.VERIFY_MANUALLY
+        # High score but uncertain — flag rather than auto-blocking. The
+        # customer's friction layer protects them; a false-positive auto-block
+        # would not.
+        return Recommendation.ALLOW_WITH_FLAG
 
     # Medium score path
     if score >= thresholds.flag:
@@ -437,7 +442,7 @@ def build_summary(
         return (
             "Local part uses characters that this provider's signup form "
             "does not accept — the address most likely cannot exist. "
-            "Recommend manual verification before delivering."
+            "Flagged: route through your verification step before delivering."
         )
 
     parts: list[str] = []
@@ -457,10 +462,8 @@ def build_summary(
     if not parts:
         if recommendation == Recommendation.BLOCK:
             return "Multiple risk signals indicate this address is high-risk."
-        if recommendation == Recommendation.VERIFY_MANUALLY:
-            return "Risk signals present but with low confidence — recommend manual review."
         if recommendation == Recommendation.ALLOW_WITH_FLAG:
-            return "Moderate risk signals. Allow but flag for monitoring."
+            return "Suspicious signals present. Route through your verification step before granting full access."
         return "Low risk."
 
     joined = ", ".join(parts[:-1]) + (f", and {parts[-1]}" if len(parts) > 1 else parts[0])
@@ -474,8 +477,7 @@ def build_summary(
 
     verdict_clause = {
         Recommendation.BLOCK: "High confidence this address will not reach a real person.",
-        Recommendation.VERIFY_MANUALLY: "Signals are suspicious but confidence is limited — recommend manual review.",
-        Recommendation.ALLOW_WITH_FLAG: "Allow but flag for monitoring.",
+        Recommendation.ALLOW_WITH_FLAG: "Allow but flag — route through your verification step.",
         Recommendation.ALLOW: "Allowed.",
     }[recommendation]
 

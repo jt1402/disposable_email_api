@@ -24,9 +24,11 @@ class RiskLevel(str, Enum):
 
 
 class Recommendation(str, Enum):
+    # Three outcomes — see scorer.derive_recommendation.
+    # allow_with_flag is the safety-margin verdict; the customer routes
+    # flagged users through their verification / friction step.
     ALLOW = "allow"
     ALLOW_WITH_FLAG = "allow_with_flag"
-    VERIFY_MANUALLY = "verify_manually"
     BLOCK = "block"
 
 

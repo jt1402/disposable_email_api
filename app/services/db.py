@@ -192,7 +192,6 @@ class DomainStats(Base):
     )
     total_checks: Mapped[int] = mapped_column(BigInteger, default=0)
     blocks: Mapped[int] = mapped_column(BigInteger, default=0)
-    verify_manually: Mapped[int] = mapped_column(BigInteger, default=0)
     allow_with_flag: Mapped[int] = mapped_column(BigInteger, default=0)
     allows: Mapped[int] = mapped_column(BigInteger, default=0)
     avg_score: Mapped[float] = mapped_column(Float, default=0.0)

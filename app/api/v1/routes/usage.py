@@ -41,7 +41,6 @@ class UsageSummary(BaseModel):
     checks_this_period: int
     period_start: str
     blocks: int
-    verify_manually: int
     allow_with_flag: int
     allows: int
     avg_latency_ms: float
@@ -68,9 +67,6 @@ async def usage_summary(current: CurrentUser) -> UsageSummary:
                 func.count().label("n"),
                 func.sum(case((db.Check.recommendation == "block", 1), else_=0)).label("blocks"),
                 func.sum(
-                    case((db.Check.recommendation == "verify_manually", 1), else_=0)
-                ).label("vm"),
-                func.sum(
                     case((db.Check.recommendation == "allow_with_flag", 1), else_=0)
                 ).label("awf"),
                 func.sum(case((db.Check.recommendation == "allow", 1), else_=0)).label("allows"),
@@ -89,7 +85,6 @@ async def usage_summary(current: CurrentUser) -> UsageSummary:
             checks_this_period=n,
             period_start=period_start.isoformat(),
             blocks=int(row.blocks or 0),
-            verify_manually=int(row.vm or 0),
             allow_with_flag=int(row.awf or 0),
             allows=int(row.allows or 0),
             avg_latency_ms=float(row.avg_latency or 0.0),
@@ -198,7 +193,6 @@ async def recent_checks(
 
 class DomainBreakdown(BaseModel):
     blocks: int
-    verify_manually: int
     allow_with_flag: int
     allows: int
 
@@ -225,7 +219,7 @@ class DomainsResponse(BaseModel):
     counts: DomainsCounts
 
 
-_REC_VALUES = ("allow", "allow_with_flag", "verify_manually", "block")
+_REC_VALUES = ("allow", "allow_with_flag", "block")
 
 
 @router.get("/domains", response_model=DomainsResponse)
@@ -274,7 +268,6 @@ async def domains(
                 db.Check.domain.label("domain"),
                 func.count().label("total"),
                 func.sum(case((db.Check.recommendation == "block", 1), else_=0)).label("blocks"),
-                func.sum(case((db.Check.recommendation == "verify_manually", 1), else_=0)).label("vm"),
                 func.sum(case((db.Check.recommendation == "allow_with_flag", 1), else_=0)).label("awf"),
                 func.sum(case((db.Check.recommendation == "allow", 1), else_=0)).label("allows"),
                 func.max(db.Check.checked_at).label("last_seen"),
@@ -294,7 +287,6 @@ async def domains(
                 agg_sub.c.domain,
                 agg_sub.c.total,
                 agg_sub.c.blocks,
-                agg_sub.c.vm,
                 agg_sub.c.awf,
                 agg_sub.c.allows,
                 agg_sub.c.last_seen,
@@ -332,7 +324,6 @@ async def domains(
             total=int(r.total or 0),
             breakdown=DomainBreakdown(
                 blocks=int(r.blocks or 0),
-                verify_manually=int(r.vm or 0),
                 allow_with_flag=int(r.awf or 0),
                 allows=int(r.allows or 0),
             ),
@@ -343,7 +334,7 @@ async def domains(
         ))
 
     # Counts for the page header pills. need_review = domains whose latest
-    # verdict is verify_manually, scoped to the same window, excluding any
+    # verdict is allow_with_flag, scoped to the same window, excluding any
     # domain already on a custom list or marked reviewed.
     reviewed_set = set(await custom_lists.list_domains(redis, current.id, custom_lists.REVIEWED))
     async with db.get_session() as s:
@@ -352,11 +343,11 @@ async def domains(
             .select_from(
                 select(latest_per_domain)
                 .where(latest_per_domain.c.rn == 1)
-                .where(latest_per_domain.c.recommendation == "verify_manually")
+                .where(latest_per_domain.c.recommendation == "allow_with_flag")
                 .subquery()
             )
         )
-        # Subtract reviewed/allow/block domains from the verify_manually count.
+        # Subtract reviewed/allow/block domains from the flagged count.
         # Cheap because the overlap sets are small.
         vm_total = (await s.execute(nr_stmt)).scalar_one() or 0
     excluded = reviewed_set | allow_set | block_set
@@ -366,7 +357,7 @@ async def domains(
             .select_from(
                 select(latest_per_domain)
                 .where(latest_per_domain.c.rn == 1)
-                .where(latest_per_domain.c.recommendation == "verify_manually")
+                .where(latest_per_domain.c.recommendation == "allow_with_flag")
                 .where(latest_per_domain.c.domain.in_(excluded))
                 .subquery()
             )
@@ -457,7 +448,6 @@ async def domain_history(
             select(
                 func.count().label("total"),
                 func.sum(case((db.Check.recommendation == "block", 1), else_=0)).label("blocks"),
-                func.sum(case((db.Check.recommendation == "verify_manually", 1), else_=0)).label("vm"),
                 func.sum(case((db.Check.recommendation == "allow_with_flag", 1), else_=0)).label("awf"),
                 func.sum(case((db.Check.recommendation == "allow", 1), else_=0)).label("allows"),
             )
@@ -512,7 +502,6 @@ async def domain_history(
         ],
         aggregate=DomainBreakdown(
             blocks=int(agg_row.blocks or 0),
-            verify_manually=int(agg_row.vm or 0),
             allow_with_flag=int(agg_row.awf or 0),
             allows=int(agg_row.allows or 0),
         ),

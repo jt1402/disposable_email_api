@@ -72,7 +72,6 @@ async def record_check(
                 last_seen=now,
                 total_checks=1,
                 blocks=1 if recommendation == "block" else 0,
-                verify_manually=1 if recommendation == "verify_manually" else 0,
                 allow_with_flag=1 if recommendation == "allow_with_flag" else 0,
                 allows=1 if recommendation == "allow" else 0,
                 avg_score=float(risk_score),
@@ -84,7 +83,6 @@ async def record_check(
                     "last_seen": now,
                     "total_checks": db.DomainStats.total_checks + 1,
                     "blocks": db.DomainStats.blocks + (1 if recommendation == "block" else 0),
-                    "verify_manually": db.DomainStats.verify_manually + (1 if recommendation == "verify_manually" else 0),
                     "allow_with_flag": db.DomainStats.allow_with_flag + (1 if recommendation == "allow_with_flag" else 0),
                     "allows": db.DomainStats.allows + (1 if recommendation == "allow" else 0),
                     "avg_score": (

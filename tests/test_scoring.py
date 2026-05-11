@@ -5,7 +5,7 @@ Covers:
 - Hard disqualifiers short-circuit to 100
 - Compounding math (1.3x / 1.6x / 1.9x)
 - Trust signals reduce score
-- Confidence gate produces verify_manually on high-score/low-confidence
+- Confidence gate produces allow_with_flag on high-score/low-confidence
 - Named compound catch_all_new_domain replaces its parts
 - Per-profile thresholds (strict/balanced/permissive)
 - Bootstrap vs calibrated phase thresholds
@@ -144,7 +144,7 @@ def test_confidence_level_bands() -> None:
     assert scorer.confidence_level(0.45) == ConfidenceLevel.LOW
 
 
-# ── Confidence gate → verify_manually ────────────────────────────────────────
+# ── Confidence gate → allow_with_flag ────────────────────────────────────────
 
 def test_high_score_high_confidence_blocks() -> None:
     th = scorer.thresholds_for(RiskProfile.BALANCED, ModelPhase.CALIBRATED)
@@ -152,11 +152,12 @@ def test_high_score_high_confidence_blocks() -> None:
     assert rec == Recommendation.BLOCK
 
 
-def test_high_score_low_confidence_verifies_manually() -> None:
-    """The single rule that prevents most false positives."""
+def test_high_score_low_confidence_flags() -> None:
+    """The single rule that prevents most false positives — high score
+    without high confidence flags rather than auto-blocks."""
     th = scorer.thresholds_for(RiskProfile.BALANCED, ModelPhase.CALIBRATED)
     rec = scorer.derive_recommendation(85, 0.45, ["catch_all_new_domain"], th)
-    assert rec == Recommendation.VERIFY_MANUALLY
+    assert rec == Recommendation.ALLOW_WITH_FLAG
 
 
 def test_medium_score_flags() -> None:
@@ -236,12 +237,13 @@ def test_summary_for_fraud_pattern() -> None:
     assert "catch-all" in s.lower()
 
 
-def test_summary_for_verify_manually() -> None:
+def test_summary_for_flagged_with_low_confidence() -> None:
     s = scorer.build_summary(
-        ["catch_all_domain"], [], 85, Recommendation.VERIFY_MANUALLY,
+        ["catch_all_domain"], [], 85, Recommendation.ALLOW_WITH_FLAG,
         catch_all=True,
     )
-    assert "review" in s.lower() or "verify" in s.lower() or "manual" in s.lower()
+    # Summary should mention the flag and the customer's verification step.
+    assert "flag" in s.lower() or "verif" in s.lower()
 
 
 # ── Risk level bands (unchanged) ─────────────────────────────────────────────
