@@ -2,7 +2,7 @@
 PostgreSQL async engine via SQLAlchemy 2.0.
 
 Tables:
-  users              — dashboard user accounts (magic-link signup, optional Stripe link)
+  users              — dashboard user accounts (magic-link signup, Polar customer link)
   user_sessions      — active session tokens (hashed) per user
   magic_link_tokens  — single-use tokens for signup verification / passwordless login
   api_keys           — one per Unkey key, linked to user
@@ -44,10 +44,6 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
-    )
-    # Legacy Stripe link, kept until the Stripe migration column is dropped.
-    stripe_customer_id: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True, index=True
     )
     polar_customer_id: Mapped[str | None] = mapped_column(
         String(64), unique=True, nullable=True, index=True

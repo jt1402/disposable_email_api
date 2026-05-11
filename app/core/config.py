@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     # PAYG credit model — credits live on User.credit_balance_checks.
     # Every successful /v1/check decrements by 1.
     free_signup_credits: int = 100
-    # Bundle sizes in checks — must match the Stripe price IDs above.
+    # Bundle sizes in checks — must match the Polar product UUIDs above.
     bundle_checks_5k: int = 5_000
     bundle_checks_10k: int = 10_000
     bundle_checks_25k: int = 25_000
