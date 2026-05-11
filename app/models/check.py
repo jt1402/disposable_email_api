@@ -61,6 +61,10 @@ class CheckRequest(BaseModel):
     email: str = Field(..., max_length=254, description="Email address to check")
 
 
+class DomainCheckRequest(BaseModel):
+    domain: str = Field(..., max_length=255, description="Domain to check (no local part)")
+
+
 class BulkCheckRequest(BaseModel):
     emails: list[str] = Field(
         ...,

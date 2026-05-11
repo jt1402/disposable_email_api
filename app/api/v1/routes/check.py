@@ -12,11 +12,13 @@ Returns the 5-block CheckResponse (meta / verdict / score / signals / checks).
 """
 
 import asyncio
+import json
 import logging
 import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from app.api.v1.deps import CurrentUser, require_api_key
 from app.detection import engine
@@ -28,9 +30,15 @@ from app.models.check import (
     BulkSummary,
     CheckRequest,
     CheckResponse,
+    DomainCheckRequest,
 )
-from app.models.errors import invalid_email_param_error, quota_exceeded_error
-from app.services import credits, webhook_dispatch
+from app.models.errors import (
+    invalid_domain_param_error,
+    invalid_email_param_error,
+    invalid_idempotency_key_error,
+    quota_exceeded_error,
+)
+from app.services import credits, idempotency, webhook_dispatch
 from app.services.redis_client import get_redis
 from app.services.unkey import VerifyResult
 
@@ -79,6 +87,35 @@ async def _charge_or_402(auth: VerifyResult) -> None:
         raise HTTPException(status_code=402, detail=quota_exceeded_error().model_dump())
 
 
+async def _idempotency_lookup(
+    auth: VerifyResult, idem_key: str | None, body: bytes,
+) -> dict | None:
+    """Return cached response dict if an identical prior request exists."""
+    if not idem_key or not auth.key_id:
+        return None
+    redis = get_redis()
+    try:
+        hit = await idempotency.lookup(redis, auth.key_id, idem_key, body)
+    except idempotency.IdempotencyConflict:
+        raise HTTPException(
+            status_code=409,
+            detail=invalid_idempotency_key_error().model_dump(),
+        )
+    if hit is None:
+        return None
+    _, response = hit
+    return response
+
+
+async def _idempotency_store(
+    auth: VerifyResult, idem_key: str | None, body: bytes, response: dict, status: int = 200,
+) -> None:
+    if not idem_key or not auth.key_id:
+        return
+    redis = get_redis()
+    await idempotency.store(redis, auth.key_id, idem_key, body, status, response)
+
+
 async def _charge_n_or_402(auth: VerifyResult, n: int) -> int:
     """
     Atomically charge N credits or raise 402. Returns the new balance.
@@ -124,17 +161,25 @@ async def check_post(
     request: Request,
     body: CheckRequest,
     x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     auth: VerifyResult = Depends(require_api_key),
 ) -> CheckResponse:
+    raw_body = body.model_dump_json().encode("utf-8")
+    cached = await _idempotency_lookup(auth, idempotency_key, raw_body)
+    if cached is not None:
+        return CheckResponse.model_validate(cached)
+
     await _charge_or_402(auth)
     redis = get_redis()
-    return await engine.check(
+    response = await engine.check(
         body.email, redis,
         api_key_id=auth.key_id,
         risk_profile_header=_profile_override(x_risk_profile, auth),
         request_id=_request_id(request),
         owner_id=int(auth.owner_id) if auth.owner_id.isdigit() else None,
     )
+    await _idempotency_store(auth, idempotency_key, raw_body, response.model_dump(mode="json"))
+    return response
 
 
 @router.post(
@@ -146,6 +191,7 @@ async def check_bulk(
     request: Request,
     body: BulkCheckRequest,
     x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     auth: VerifyResult = Depends(require_api_key),
 ) -> BulkCheckResponse:
     """
@@ -158,6 +204,11 @@ async def check_bulk(
     input. Invalid syntax produces a CheckResponse with recommendation=block,
     not an error — bulk never fails individual rows separately.
     """
+    raw_body = body.model_dump_json().encode("utf-8")
+    cached = await _idempotency_lookup(auth, idempotency_key, raw_body)
+    if cached is not None:
+        return BulkCheckResponse.model_validate(cached)
+
     t_start = time.monotonic()
     n = len(body.emails)
     new_balance = await _charge_n_or_402(auth, n)
@@ -186,7 +237,7 @@ async def check_bulk(
     )
 
     elapsed_ms = int((time.monotonic() - t_start) * 1000)
-    return BulkCheckResponse(
+    response = BulkCheckResponse(
         items=results,
         summary=BulkSummary(
             total=n,
@@ -195,6 +246,8 @@ async def check_bulk(
             elapsed_ms=elapsed_ms,
         ),
     )
+    await _idempotency_store(auth, idempotency_key, raw_body, response.model_dump(mode="json"))
+    return response
 
 
 @router.post(
@@ -207,6 +260,7 @@ async def check_async(
     request: Request,
     body: AsyncCheckRequest,
     x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     auth: VerifyResult = Depends(require_api_key),
 ) -> AsyncCheckResponse:
     """
@@ -225,6 +279,13 @@ async def check_async(
             status_code=422,
             detail={"code": "invalid_webhook_url", "message": f"Webhook URL rejected: {reason}"},
         )
+
+    raw_body = body.model_dump_json().encode("utf-8")
+    cached = await _idempotency_lookup(auth, idempotency_key, raw_body)
+    if cached is not None:
+        # Replay the prior 202 — do not re-charge and do not re-schedule the
+        # webhook. Customer should treat this as the original response.
+        return AsyncCheckResponse.model_validate(cached)
 
     await _charge_or_402(auth)
 
@@ -271,7 +332,7 @@ async def check_async(
 
     asyncio.create_task(_deep_then_deliver())
 
-    return AsyncCheckResponse(
+    response = AsyncCheckResponse(
         request_id=preliminary.meta.request_id,
         status="pending",
         preliminary=preliminary,
@@ -279,6 +340,124 @@ async def check_async(
         # Catch-all probe budgets ~5s + DNS overhead — round figure for UX.
         estimated_completion_ms=6000,
     )
+    await _idempotency_store(auth, idempotency_key, raw_body, response.model_dump(mode="json"), status=202)
+    return response
+
+
+@router.post(
+    "/check/bulk/stream",
+    summary="Bulk check (NDJSON stream — results stream as each row completes)",
+    response_class=StreamingResponse,
+)
+async def check_bulk_stream(
+    request: Request,
+    body: BulkCheckRequest,
+    x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
+    auth: VerifyResult = Depends(require_api_key),
+) -> StreamingResponse:
+    """
+    Same as /v1/check/bulk but emits one JSON object per line as each check
+    finishes — useful for very large batches (5k–100k addresses) where the
+    customer wants to start processing results before the full batch is done.
+
+    Content-Type: application/x-ndjson
+    Each line is a CheckResponse. Final line is a summary object:
+      {"event": "summary", "total": N, "credits_remaining": M, "elapsed_ms": K}
+
+    Charges N credits up front, same all-or-nothing rule as /v1/check/bulk.
+    Idempotency-Key is not supported here — replays would re-stream, which
+    customers shouldn't depend on.
+    """
+    t_start = time.monotonic()
+    n = len(body.emails)
+    new_balance = await _charge_n_or_402(auth, n)
+
+    redis = get_redis()
+    profile = _profile_override(x_risk_profile, auth)
+    request_id_prefix = _request_id(request) or ""
+    owner = int(auth.owner_id) if auth.owner_id.isdigit() else None
+
+    async def generate():
+        sem = asyncio.Semaphore(_BULK_CONCURRENCY)
+
+        async def _one(idx: int, email: str):
+            async with sem:
+                result = await engine.check(
+                    email, redis,
+                    api_key_id=auth.key_id,
+                    risk_profile_header=profile,
+                    request_id=f"{request_id_prefix}.{idx}" if request_id_prefix else "",
+                    owner_id=owner,
+                )
+                return idx, result
+
+        tasks = [asyncio.create_task(_one(i, e)) for i, e in enumerate(body.emails)]
+        # as_completed lets us yield in finish-order, not input-order. The
+        # customer can correlate via the `index` field in each line.
+        for coro in asyncio.as_completed(tasks):
+            idx, result = await coro
+            line = {"index": idx, "result": result.model_dump(mode="json")}
+            yield (json.dumps(line) + "\n").encode("utf-8")
+
+        elapsed_ms = int((time.monotonic() - t_start) * 1000)
+        summary = {
+            "event": "summary",
+            "total": n,
+            "credits_charged": n if auth.owner_id.isdigit() else 0,
+            "credits_remaining": new_balance,
+            "elapsed_ms": elapsed_ms,
+        }
+        yield (json.dumps(summary) + "\n").encode("utf-8")
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
+@router.post(
+    "/check/domain",
+    response_model=CheckResponse,
+    summary="Check a domain only (no local part)",
+)
+async def check_domain(
+    request: Request,
+    body: DomainCheckRequest,
+    x_risk_profile: Annotated[str | None, Header(alias="X-Risk-Profile")] = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    auth: VerifyResult = Depends(require_api_key),
+) -> CheckResponse:
+    """
+    Run the detection engine against just a domain. Identical pricing to
+    /v1/check (1 credit). Use when you already have a domain and don't need
+    us to syntax-validate an email — saves you from constructing a fake
+    local part on the customer side.
+
+    Internally we run the standard engine path with a neutral synthetic
+    local part so no per-email signals fire. Response's `meta.email` is
+    blanked so the customer never sees the synthetic probe address.
+    """
+    domain = body.domain.strip().lower()
+    if not domain or "@" in domain or "." not in domain or len(domain) > 255:
+        raise HTTPException(status_code=422, detail=invalid_domain_param_error().model_dump())
+
+    raw_body = body.model_dump_json().encode("utf-8")
+    cached = await _idempotency_lookup(auth, idempotency_key, raw_body)
+    if cached is not None:
+        return CheckResponse.model_validate(cached)
+
+    await _charge_or_402(auth)
+    redis = get_redis()
+    # Neutral synthetic local part — short, vowel-balanced, ASCII-only.
+    # None of the local-part signals fire on "probe".
+    response = await engine.check(
+        f"probe@{domain}", redis,
+        api_key_id=auth.key_id,
+        risk_profile_header=_profile_override(x_risk_profile, auth),
+        request_id=_request_id(request),
+        owner_id=int(auth.owner_id) if auth.owner_id.isdigit() else None,
+    )
+    # Blank the synthetic email — customer never asked us to validate one.
+    response.meta.email = ""
+    await _idempotency_store(auth, idempotency_key, raw_body, response.model_dump(mode="json"))
+    return response
 
 
 @router.post(

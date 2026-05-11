@@ -24,6 +24,7 @@ class VerifyResult:
     owner_id: str = ""
     remaining: int | None = None
     risk_profile: str = ""  # from meta.risk_profile — empty → use server default
+    rate_limit_per_minute: int = 0  # from meta.rate_limit_per_minute — 0 → default
     error: str = ""
 
 
@@ -64,6 +65,7 @@ async def verify_key(api_key: str) -> VerifyResult:
 
     meta = data.get("meta") or {}
     risk_profile = meta.get("risk_profile", "")
+    rate_limit_per_minute = int(meta.get("rate_limit_per_minute") or 0)
 
     # Unkey v2 nests the customer reference inside `data.identity.externalId`.
     # Older / v1-style payloads put it at `data.externalId` (or `data.ownerId`).
@@ -92,6 +94,7 @@ async def verify_key(api_key: str) -> VerifyResult:
         owner_id=owner_id,
         remaining=remaining,
         risk_profile=risk_profile,
+        rate_limit_per_minute=rate_limit_per_minute,
     )
 
 

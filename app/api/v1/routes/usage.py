@@ -10,13 +10,14 @@ from datetime import UTC, datetime, timedelta
 
 import json
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
 
-from app.api.v1.deps import CurrentUser
-from app.services import custom_lists, db
+from app.api.v1.deps import CurrentUser, require_api_key
+from app.services import credits, custom_lists, db
 from app.services.redis_client import get_redis
+from app.services.unkey import VerifyResult
 
 router = APIRouter(prefix="/usage", tags=["usage"])
 
@@ -47,14 +48,9 @@ class UsageSummary(BaseModel):
     cache_hit_rate: float
 
 
-@router.get("/summary", response_model=UsageSummary)
-async def usage_summary(current: CurrentUser) -> UsageSummary:
-    """
-    Rolled-up usage stats for the caller. Period = current calendar month
-    (matches Unkey's monthly refill day). `checks_this_period` is what the
-    dashboard's quota bar reads from.
-    """
-    key_ids = await _key_ids_for_user(current.id)
+async def _build_summary(user_id: int) -> UsageSummary:
+    """Shared summary builder used by both session and API-key paths."""
+    key_ids = await _key_ids_for_user(user_id)
     now = datetime.now(UTC)
     period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -90,6 +86,47 @@ async def usage_summary(current: CurrentUser) -> UsageSummary:
             avg_latency_ms=float(row.avg_latency or 0.0),
             cache_hit_rate=(cached_count / n) if n > 0 else 0.0,
         )
+
+
+@router.get("/summary", response_model=UsageSummary)
+async def usage_summary(current: CurrentUser) -> UsageSummary:
+    """
+    Rolled-up usage stats for the caller. Period = current calendar month
+    (matches Unkey's monthly refill day). `checks_this_period` is what the
+    dashboard's quota bar reads from.
+    """
+    return await _build_summary(current.id)
+
+
+class MeUsageResponse(UsageSummary):
+    credit_balance_checks: int = 0
+
+
+@router.get(
+    "/me",
+    response_model=MeUsageResponse,
+    summary="Usage summary for the caller (API-key authed)",
+)
+async def me_usage(
+    auth: VerifyResult = Depends(require_api_key),
+) -> MeUsageResponse:
+    """
+    Programmatic equivalent of /v1/usage/summary — same shape plus the
+    customer's remaining credit balance. Use this from your own admin /
+    monitoring stack rather than scraping the dashboard.
+    """
+    if not auth.owner_id.isdigit():
+        raise HTTPException(status_code=400, detail={
+            "code": "invalid_key_owner",
+            "message": "This key is not bound to a customer account.",
+        })
+    owner_id = int(auth.owner_id)
+    summary = await _build_summary(owner_id)
+    balance = await credits.get_balance(owner_id)
+    return MeUsageResponse(
+        **summary.model_dump(),
+        credit_balance_checks=balance,
+    )
 
 
 class DailyBucket(BaseModel):
@@ -153,23 +190,47 @@ class RecentCheck(BaseModel):
 
 class RecentResponse(BaseModel):
     items: list[RecentCheck]
+    next_cursor: str | None = None
 
 
 @router.get("/recent", response_model=RecentResponse)
 async def recent_checks(
     current: CurrentUser,
     limit: int = Query(default=50, ge=1, le=500),
+    before: str | None = Query(
+        default=None,
+        description="ISO-8601 timestamp from a previous response's next_cursor. "
+                    "Returns rows strictly older than this time.",
+    ),
 ) -> RecentResponse:
-    """Latest N checks across all of the user's keys. Domain only — no emails."""
+    """
+    Latest N checks across all of the user's keys. Domain only — no emails.
+    Cursor pagination: pass `before` set to the prior response's next_cursor
+    to fetch the next page backward through history.
+    """
     key_ids = await _key_ids_for_user(current.id)
+    before_dt: datetime | None = None
+    if before:
+        try:
+            before_dt = datetime.fromisoformat(before.replace("Z", "+00:00"))
+        except ValueError:
+            before_dt = None
+
     async with db.get_session() as s:
         stmt = (
             select(db.Check)
             .where(db.Check.api_key_id.in_(key_ids))
             .order_by(db.Check.checked_at.desc())
-            .limit(limit)
+            # Fetch one extra row to detect "has more" without a separate count.
+            .limit(limit + 1)
         )
+        if before_dt is not None:
+            stmt = stmt.where(db.Check.checked_at < before_dt)
         rows = (await s.execute(stmt)).scalars().all()
+
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = rows[-1].checked_at.isoformat() if has_more and rows else None
 
     return RecentResponse(
         items=[
@@ -185,7 +246,8 @@ async def recent_checks(
                 checked_at=r.checked_at.isoformat(),
             )
             for r in rows
-        ]
+        ],
+        next_cursor=next_cursor,
     )
 
 

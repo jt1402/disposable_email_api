@@ -118,6 +118,61 @@ def internal_error() -> ErrorDetail:
     )
 
 
+# ── New launch-readiness codes ───────────────────────────────────────────────
+
+
+def too_many_requests_error(limit: int, reset_at_iso: str) -> ErrorDetail:
+    """Per-key per-minute burst limit hit. Distinct from quota_exceeded (no
+    credits) and the historic rate_limit_error (monthly check ceiling)."""
+    return ErrorDetail(
+        code="too_many_requests",
+        http_status=429,
+        message=f"Rate limit exceeded — over {limit} req/min on this key. Retry after the window resets.",
+        limit=limit,
+        reset_at=reset_at_iso,
+        docs_url=f"{DOCS_BASE}/rate-limits",
+    )
+
+
+def service_degraded_error(component: str) -> ErrorDetail:
+    return ErrorDetail(
+        code="service_degraded",
+        http_status=503,
+        message=f"A required component ({component}) is degraded or unreachable. Retry shortly.",
+        docs_url=f"{DOCS_BASE}/errors",
+    )
+
+
+def dns_timeout_error() -> ErrorDetail:
+    return ErrorDetail(
+        code="dns_timeout",
+        http_status=504,
+        message="DNS resolution timed out while checking this domain. Retry.",
+        docs_url=f"{DOCS_BASE}/errors",
+    )
+
+
+def invalid_idempotency_key_error() -> ErrorDetail:
+    return ErrorDetail(
+        code="invalid_idempotency_key",
+        http_status=409,
+        message=(
+            "Idempotency-Key conflict — the same key was previously used with a "
+            "different request body. Use a fresh key or send the original payload."
+        ),
+        docs_url=f"{DOCS_BASE}/idempotency",
+    )
+
+
+def invalid_domain_param_error() -> ErrorDetail:
+    return ErrorDetail(
+        code="invalid_request",
+        http_status=422,
+        message="'domain' parameter is required. Example: POST /v1/check/domain {\"domain\": \"example.com\"}",
+        docs_url=f"{DOCS_BASE}/check-domain",
+    )
+
+
 # ── Backwards-compatible class alias ──────────────────────────────────────────
 # Code written against the old `ErrorResponse` shape still works — it now
 # extends ErrorDetail so every error automatically carries `request_id`

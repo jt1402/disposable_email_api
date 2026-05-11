@@ -78,6 +78,12 @@ def create_app() -> FastAPI:
         request.state.request_id = f"req_{secrets.token_hex(6)}"
         response = await call_next(request)
         response.headers["X-Request-Id"] = request.state.request_id
+        # Per-key rate-limit headers, populated by require_api_key.
+        rl = getattr(request.state, "rate_limit", None)
+        if rl:
+            response.headers["X-RateLimit-Limit"] = str(rl["limit"])
+            response.headers["X-RateLimit-Remaining"] = str(rl["remaining"])
+            response.headers["X-RateLimit-Reset"] = str(rl["reset"])
         return response
 
     # ── Routes ────────────────────────────────────────────────────────────────
